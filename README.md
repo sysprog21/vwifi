@@ -17,7 +17,7 @@ make
 Get necessary packages in advance:
 ```shell
 sudo apt install iw
-sudo apt install  wireless-tools
+sudo apt install wireless-tools
 ```
 
 Load `cfg80211` kernel module:
@@ -35,7 +35,7 @@ Check network interfaces:
 ip link
 ```
 
-There should be an entry name `owl0`, which is exactly the interface created by `vwifi`.
+There should be an entry starting with `owl0`, which is exactly the interface created by `vwifi`.
 
 Bring up the network interface:
 ```shell
