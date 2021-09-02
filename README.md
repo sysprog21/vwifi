@@ -121,3 +121,10 @@ owl0      IEEE 802.11  ESSID:"MyHomeWiFi"
 
 `vwifi` is released under the MIT license. Use of this source code is governed
 by a MIT-style license that can be found in the LICENSE file.
+
+## Reference
+
+* [Using iw to Manage Wireless LAN in Linux](http://ict.siit.tu.ac.th/help/iw)
+* [mac80211_hwsim](https://www.kernel.org/doc/html/latest/networking/mac80211_hwsim/mac80211_hwsim.html): software simulator of 802.11 radio(s) for mac80211
+* [A virtual wlan network in Linux](https://feldspaten.org/2020/04/01/a-virtual-wlan-network-in-linux/)
+* [virt_wifi](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/virt_wifi.c): a completet virtual wireless driver that can be used as a wrapper around Ethernet
