@@ -104,6 +104,19 @@ Finally, we can connect to the dummy SSID `MyHomeWiFi`:
 sudo iw dev owl0 connect MyHomeWiFi
 ```
 
+Validate the connection:
+```shell
+iwconfig owl0
+```
+
+Reference output:
+````
+owl0      IEEE 802.11  ESSID:"MyHomeWiFi"
+          Mode:Managed  Frequency:2.437 GHz  Access Point: AA:BB:CC:DD:EE:FF
+          Retry short limit:7   RTS thr:off   Fragment thr:off
+          Power Management:on
+```
+
 ## License
 
 `vwifi` is released under the MIT license. Use of this source code is governed
