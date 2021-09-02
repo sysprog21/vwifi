@@ -117,6 +117,15 @@ owl0      IEEE 802.11  ESSID:"MyHomeWiFi"
           Power Management:on
 ```
 
+Optional, you can use wireless device monitoring applications such as [wavemon](https://github.com/uoaerg/wavemon) to
+watch signal and noise levels, packet statistics, device configuration and network parameters of `vwifi`.
+```shell
+sudo apt install wavemon
+```
+
+<p align="center"><img src="assets/wavemon.png" alt="logo image" width=40%></p>
+
+
 ## License
 
 `vwifi` is released under the MIT license. Use of this source code is governed
