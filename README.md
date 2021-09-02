@@ -110,7 +110,7 @@ iwconfig owl0
 ```
 
 Reference output:
-````
+```
 owl0      IEEE 802.11  ESSID:"MyHomeWiFi"
           Mode:Managed  Frequency:2.437 GHz  Access Point: AA:BB:CC:DD:EE:FF
           Retry short limit:7   RTS thr:off   Fragment thr:off
