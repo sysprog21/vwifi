@@ -20,7 +20,7 @@ struct owl_context {
     struct wiphy *wiphy;
     struct net_device *ndev;
 
-    struct mutex mtx;
+    struct mutex lock;
     struct work_struct ws_connect, ws_disconnect;
     char connecting_ssid[sizeof(SSID_DUMMY)];
     u16 disconnect_reason_code;
@@ -113,7 +113,7 @@ static void owl_scan_routine(struct work_struct *w)
     /* inform with dummy BSS */
     inform_dummy_bss(owl);
 
-    if (mutex_lock_interruptible(&owl->mtx))
+    if (mutex_lock_interruptible(&owl->lock))
         return;
 
     /* finish scan */
@@ -121,7 +121,7 @@ static void owl_scan_routine(struct work_struct *w)
 
     owl->scan_request = NULL;
 
-    mutex_unlock(&owl->mtx);
+    mutex_unlock(&owl->lock);
 }
 
 /* It checks SSID of the ESS to connect and informs the kernel that connection
@@ -135,7 +135,7 @@ static void owl_connect_routine(struct work_struct *w)
 {
     struct owl_context *owl = container_of(w, struct owl_context, ws_connect);
 
-    if (mutex_lock_interruptible(&owl->mtx))
+    if (mutex_lock_interruptible(&owl->lock))
         return;
 
     if (memcmp(owl->connecting_ssid, SSID_DUMMY, sizeof(SSID_DUMMY)) != 0) {
@@ -156,7 +156,7 @@ static void owl_connect_routine(struct work_struct *w)
     }
     owl->connecting_ssid[0] = 0;
 
-    mutex_unlock(&owl->mtx);
+    mutex_unlock(&owl->lock);
 }
 
 /* Invoke cfg80211_disconnected() that informs the kernel that disconnect is
@@ -170,7 +170,7 @@ static void owl_disconnect_routine(struct work_struct *w)
     struct owl_context *owl =
         container_of(w, struct owl_context, ws_disconnect);
 
-    if (mutex_lock_interruptible(&owl->mtx))
+    if (mutex_lock_interruptible(&owl->lock))
         return;
 
     cfg80211_disconnected(owl->ndev, owl->disconnect_reason_code, NULL, 0, true,
@@ -178,7 +178,7 @@ static void owl_disconnect_routine(struct work_struct *w)
 
     owl->disconnect_reason_code = 0;
 
-    mutex_unlock(&owl->mtx);
+    mutex_unlock(&owl->lock);
 }
 
 /* callback called by the kernel when user decided to scan.
@@ -190,16 +190,16 @@ static int owl_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 {
     struct owl_context *owl = wiphy_get_owl_context(wiphy)->owl;
 
-    if (mutex_lock_interruptible(&owl->mtx))
+    if (mutex_lock_interruptible(&owl->lock))
         return -ERESTARTSYS;
 
     if (owl->scan_request) {
-        mutex_unlock(&owl->mtx);
+        mutex_unlock(&owl->lock);
         return -EBUSY;
     }
     owl->scan_request = request;
 
-    mutex_unlock(&owl->mtx);
+    mutex_unlock(&owl->lock);
 
     if (!schedule_work(&owl->ws_scan))
         return -EBUSY;
@@ -219,13 +219,13 @@ static int owl_connect(struct wiphy *wiphy,
     struct owl_context *owl = wiphy_get_owl_context(wiphy)->owl;
     size_t ssid_len = sme->ssid_len > 15 ? 15 : sme->ssid_len;
 
-    if (mutex_lock_interruptible(&owl->mtx))
+    if (mutex_lock_interruptible(&owl->lock))
         return -ERESTARTSYS;
 
     memcpy(owl->connecting_ssid, sme->ssid, ssid_len);
     owl->connecting_ssid[ssid_len] = 0;
 
-    mutex_unlock(&owl->mtx);
+    mutex_unlock(&owl->lock);
 
     if (!schedule_work(&owl->ws_connect))
         return -EBUSY;
@@ -244,15 +244,16 @@ static int owl_disconnect(struct wiphy *wiphy,
 {
     struct owl_context *owl = wiphy_get_owl_context(wiphy)->owl;
 
-    if (mutex_lock_interruptible(&owl->mtx))
+    if (mutex_lock_interruptible(&owl->lock))
         return -ERESTARTSYS;
 
     owl->disconnect_reason_code = reason_code;
 
-    mutex_unlock(&owl->mtx);
+    mutex_unlock(&owl->lock);
 
     if (!schedule_work(&owl->ws_disconnect))
         return -EBUSY;
+
     return 0;
 }
 
@@ -459,13 +460,15 @@ static int __init vwifi_init(void)
     if (!g_ctx)
         return 1;
 
-    mutex_init(&g_ctx->mtx);
+    mutex_init(&g_ctx->lock);
+
     INIT_WORK(&g_ctx->ws_connect, owl_connect_routine);
     g_ctx->connecting_ssid[0] = 0;
     INIT_WORK(&g_ctx->ws_disconnect, owl_disconnect_routine);
     g_ctx->disconnect_reason_code = 0;
     INIT_WORK(&g_ctx->ws_scan, owl_scan_routine);
     g_ctx->scan_request = NULL;
+
     return 0;
 }
 
