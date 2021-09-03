@@ -7,7 +7,7 @@ which works together with FullMAC drivers. At present, it only supports station 
 
 ## Build
 
-Run `mak`e to build the kernel module:
+Run `make` to build the kernel module:
 ```shell
 make
 ```
@@ -20,7 +20,7 @@ sudo apt install iw
 sudo apt install wireless-tools
 ```
 
-Load `cfg80211` kernel module:
+Add `cfg80211` kernel module:
 ```shell
 sudo modprobe cfg80211
 ```
