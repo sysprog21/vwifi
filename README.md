@@ -133,7 +133,7 @@ by a MIT-style license that can be found in the LICENSE file.
 
 ## Reference
 
-* [Using iw to Manage Wireless LAN in Linux](http://ict.siit.tu.ac.th/help/iw)
 * [mac80211_hwsim](https://www.kernel.org/doc/html/latest/networking/mac80211_hwsim/mac80211_hwsim.html): software simulator of 802.11 radio(s) for mac80211
-* [A virtual wlan network in Linux](https://feldspaten.org/2020/04/01/a-virtual-wlan-network-in-linux/)
+* [Emulating WLAN in Linux - part I: the 802.11 stack](https://linuxembedded.fr/2020/05/emulating-wlan-in-linux-part-i-the-80211-stack)
+* [Emulating WLAN in Linux - part II: mac80211_hwsim](https://linuxembedded.fr/2021/01/emulating-wlan-in-linux-part-ii-mac80211hwsim)
 * [virt_wifi](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/virt_wifi.c): a completet virtual wireless driver that can be used as a wrapper around Ethernet
