@@ -86,7 +86,7 @@ static void inform_dummy_bss(struct owl_context *owl)
     cfg80211_put_bss(owl->wiphy, bss);
 }
 
-/* "Scan" routine. It informs the kernel about "dummy" BSS and "finishs" scan.
+/* "Scan" routine. It informs the kernel about "dummy" BSS and "finish" scan.
  * When scan is done, it should call cfg80211_scan_done() to inform the kernel
  * that scan is finished. This routine called through workqueue, when the
  * kernel asks to scan through cfg80211_ops.
@@ -352,7 +352,7 @@ static struct owl_context *owl_create_context(void)
 
     /* allocate wiphy context. It is possible just to use wiphy_new().
      * wiphy should represent physical FullMAC wireless device. One wiphy can
-     * have serveral network interfaces - for that, weneed to implement
+     * have serveral network interfaces - for that, we need to implement
      * add_virtual_intf() from cfg80211_ops.
      */
     ret->wiphy = wiphy_new_nm(
