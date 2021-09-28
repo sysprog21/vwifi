@@ -27,7 +27,7 @@ sudo modprobe cfg80211
 
 Insert `vwifi` driver:
 ```shell
-sudo insmod vwifi.ko
+sudo insmod vwifi.ko ssid_list='[MyWifi_1][MyWifi_2][MyHomeWifi]'
 ```
 
 Check network interfaces:
@@ -116,6 +116,17 @@ owl0      IEEE 802.11  ESSID:"MyHomeWiFi"
           Retry short limit:7   RTS thr:off   Fragment thr:off
           Power Management:on
 ```
+
+Change wifi list:
+```
+echo -n "[MyWifi_1][MyWifi_2][MyWifi_3]" | sudo tee /sys/module/vwifi/parameters/ssid_list
+```
+
+SSID Naming Convention:
+
+Don't put `[` or `]` in your SSID.
+Also, the length of each SSID should be restricted between 0 and 32.
+The default value of `ssid_list` is `[MyHomeWifi]` if it's not specified explicitly by user.
 
 Optional, you can use wireless device monitoring applications such as [wavemon](https://github.com/uoaerg/wavemon) to
 watch signal and noise levels, packet statistics, device configuration and network parameters of `vwifi`.
