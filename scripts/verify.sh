@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 export DEVENVROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source $DEVENVROOT/scripts/cmn.sh
+source $DEVENVROOT/scripts/common.sh
 
 final_ret=0
 
