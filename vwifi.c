@@ -1,10 +1,13 @@
 #include <linux/module.h>
 
+#include <linux/random.h>
 #include <linux/skbuff.h>
 #include <net/cfg80211.h>
 
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
+
+#include <linux/moduleparam.h>
 
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
@@ -13,10 +16,12 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 #define WIPHY_NAME "owl" /* Our WireLess */
 #define NDEV_NAME WIPHY_NAME "%d"
 
-#define SSID_DUMMY "MyHomeWiFi"
-#define SSID_DUMMY_SIZE (sizeof(SSID_DUMMY) - 1)
+/* According to 802.11 Standard, SSID has max len 32. */
+#define SSID_MAX_LENGTH 32
 
-static u8 fake_bssid[ETH_ALEN] __ro_after_init = {};
+#ifndef DEFAULT_SSID_LIST
+#define DEFAULT_SSID_LIST "[MyHomeWifi]"
+#endif
 
 struct owl_context {
     struct wiphy *wiphy;
@@ -24,7 +29,7 @@ struct owl_context {
 
     struct mutex lock;
     struct work_struct ws_connect, ws_disconnect;
-    char connecting_ssid[sizeof(SSID_DUMMY)];
+    char connecting_ssid[SSID_MAX_LENGTH];
     u16 disconnect_reason_code;
     struct work_struct ws_scan;
     struct cfg80211_scan_request *scan_request;
@@ -38,6 +43,11 @@ struct owl_ndev_priv_context {
     struct owl_context *owl;
     struct wireless_dev wdev;
 };
+
+static char *ssid_list = "";
+module_param(ssid_list, charp, 0644);
+MODULE_PARM_DESC(ssid_list, "Self-defined SSIDs.");
+static const char sdssid_delim[] = "]";
 
 /* helper function to retrieve main context from "priv" data of the wiphy */
 static inline struct owl_wiphy_priv_context *wiphy_get_owl_context(
@@ -53,38 +63,82 @@ static inline struct owl_ndev_priv_context *ndev_get_owl_context(
     return (struct owl_ndev_priv_context *) netdev_priv(ndev);
 }
 
-/* Helper function that will prepare structure with "dummy" BSS information and
- * "inform" the kernel about "new" BSS
+static s32 rand_int(s32 low, s32 up)
+{
+    s32 result = (s32) get_random_u32();
+    result %= (up - low + 1);
+    result = abs(result);
+    result += low;
+    return result;
+}
+
+/* Helper function for generating BSSID from SSID */
+static void generate_bssid_with_ssid(u8 *result, const char *ssid)
+{
+    /*
+        Hash SSID using MurmurHash.
+        See https://stackoverflow.com/a/57960443
+    */
+    uint64_t h = 525201411107845655ull;
+    for (; *ssid; ++ssid) {
+        h ^= *ssid;
+        h *= 0x5bd1e9955bd1e995;
+        h ^= h >> 47;
+    }
+
+    u64_to_ether_addr(h, result);
+    result[0] &= 0xfe; /* clear multicast bit */
+    result[0] |= 0x02; /* set local assignment bit */
+}
+
+/* Helper function that will prepare structure with self-defined BSS information
+ * and "inform" the kernel about "new" BSS Most of the code are copied from the
+ * upcoming inform_dummy_bss function.
  */
 static void inform_dummy_bss(struct owl_context *owl)
 {
-    struct cfg80211_bss *bss = NULL;
-    struct cfg80211_inform_bss data = {
-        /* the only channel */
-        .chan = &owl->wiphy->bands[NL80211_BAND_2GHZ]->channels[0],
+    const char *org_ssid_list =
+        (ssid_list && strlen(ssid_list)) ? ssid_list : DEFAULT_SSID_LIST;
+    size_t len = strlen(org_ssid_list);
+    char *ssid_list_copy =
+        kmalloc((len + 1) * sizeof(ssid_list_copy), GFP_KERNEL);
+    strncpy(ssid_list_copy, org_ssid_list, len);
+    char *ssid_list_copy_ptr = ssid_list_copy;
 
-        /* signal "type" not specified in this module, so it is unused.
-         * It can be some kind of percentage from 0 to 100 or mBm value.
-         * signal "type" may be specified before wiphy registration by setting
-         * wiphy->signal_type
+    for (char *sdssid = strsep(&ssid_list_copy, sdssid_delim); sdssid;
+         sdssid = strsep(&ssid_list_copy, sdssid_delim)) {
+        if (!++sdssid || !strlen(sdssid) || strlen(sdssid) > SSID_MAX_LENGTH)
+            continue;
+        u8 bssid[ETH_ALEN] = {};
+        generate_bssid_with_ssid(bssid, sdssid);
+
+        struct cfg80211_bss *bss = NULL;
+        struct cfg80211_inform_bss data = {
+            /* the only channel */
+            .chan = &owl->wiphy->bands[NL80211_BAND_2GHZ]->channels[0],
+            .scan_width = NL80211_BSS_CHAN_WIDTH_20,
+            .signal = rand_int(-100, -30) * 100,
+        };
+
+        /* array of tags that retrieved from beacon frame or probe responce */
+        size_t sdssid_len = strlen(sdssid);
+        u8 *ie = kmalloc((sdssid_len + 3) * sizeof(ie), GFP_KERNEL);
+        ie[0] = WLAN_EID_SSID;
+        ie[1] = sdssid_len;
+        memcpy(ie + 2, sdssid, sdssid_len);
+
+        /* It is posible to use cfg80211_inform_bss() instead. */
+        bss = cfg80211_inform_bss_data(
+            owl->wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, bssid, 0,
+            WLAN_CAPABILITY_ESS, 100, ie, sdssid_len + 2, GFP_KERNEL);
+
+        /* cfg80211_inform_bss_data() returns cfg80211_bss structure referefence
+         * counter of which should be decremented if it is unused.
          */
-        .scan_width = NL80211_BSS_CHAN_WIDTH_20,
-        .signal = 1337,
-    };
-
-    /* array of tags that retrieved from beacon frame or probe responce */
-    char ie[SSID_DUMMY_SIZE + 2] = {WLAN_EID_SSID, SSID_DUMMY_SIZE};
-    memcpy(ie + 2, SSID_DUMMY, SSID_DUMMY_SIZE);
-
-    /* It is posible to use cfg80211_inform_bss() instead. */
-    bss = cfg80211_inform_bss_data(
-        owl->wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, fake_bssid, 0,
-        WLAN_CAPABILITY_ESS, 100, ie, sizeof(ie), GFP_KERNEL);
-
-    /* cfg80211_inform_bss_data() returns cfg80211_bss structure referefence
-     * counter of which should be decremented if it is unused.
-     */
-    cfg80211_put_bss(owl->wiphy, bss);
+        cfg80211_put_bss(owl->wiphy, bss);
+        kfree(ie);
+    }
+    kfree(ssid_list_copy_ptr);
 }
 
 /* "Scan" routine. It informs the kernel about "dummy" BSS and "finish" scan.
@@ -132,6 +186,31 @@ static void owl_scan_routine(struct work_struct *w)
  * This routine is called through workqueue, when the kernel asks to connect
  * through cfg80211_ops.
  */
+static bool is_valid_ssid(const char *connecting_ssid)
+{
+    bool is_valid = false;
+
+    const char *org_ssid_list =
+        (ssid_list && strlen(ssid_list)) ? ssid_list : DEFAULT_SSID_LIST;
+    size_t len = strlen(org_ssid_list);
+    char *ssid_list_copy =
+        kmalloc((len + 1) * sizeof(ssid_list_copy), GFP_KERNEL);
+    strncpy(ssid_list_copy, org_ssid_list, len);
+    char *ssid_list_copy_ptr = ssid_list_copy;
+
+    for (char *sdssid = strsep(&ssid_list_copy, sdssid_delim); sdssid;
+         sdssid = strsep(&ssid_list_copy, sdssid_delim)) {
+        if (!++sdssid || !strlen(sdssid) || strlen(sdssid) > SSID_MAX_LENGTH)
+            continue;
+        if (memcmp(connecting_ssid, sdssid, strlen(sdssid) + 1) == 0) {
+            is_valid = true;
+            break;
+        }
+    }
+
+    kfree(ssid_list_copy_ptr);
+    return is_valid;
+}
 static void owl_connect_routine(struct work_struct *w)
 {
     struct owl_context *owl = container_of(w, struct owl_context, ws_connect);
@@ -139,7 +218,7 @@ static void owl_connect_routine(struct work_struct *w)
     if (mutex_lock_interruptible(&owl->lock))
         return;
 
-    if (memcmp(owl->connecting_ssid, SSID_DUMMY, sizeof(SSID_DUMMY)) != 0) {
+    if (!is_valid_ssid(owl->connecting_ssid)) {
         cfg80211_connect_timeout(owl->ndev, NULL, NULL, 0, GFP_KERNEL,
                                  NL80211_TIMEOUT_SCAN);
     } else {
@@ -151,9 +230,9 @@ static void owl_connect_routine(struct work_struct *w)
         /* It is possible to use cfg80211_connect_result() or
          * cfg80211_connect_done()
          */
-        cfg80211_connect_bss(owl->ndev, NULL, NULL, NULL, 0, NULL, 0,
-                             WLAN_STATUS_SUCCESS, GFP_KERNEL,
-                             NL80211_TIMEOUT_UNSPECIFIED);
+
+        cfg80211_connect_result(owl->ndev, NULL, NULL, 0, NULL, 0,
+                                WLAN_STATUS_SUCCESS, GFP_KERNEL);
     }
     owl->connecting_ssid[0] = 0;
 
@@ -218,7 +297,8 @@ static int owl_connect(struct wiphy *wiphy,
                        struct cfg80211_connect_params *sme)
 {
     struct owl_context *owl = wiphy_get_owl_context(wiphy)->owl;
-    size_t ssid_len = sme->ssid_len > 15 ? 15 : sme->ssid_len;
+    size_t ssid_len =
+        sme->ssid_len > SSID_MAX_LENGTH ? SSID_MAX_LENGTH : sme->ssid_len;
 
     if (mutex_lock_interruptible(&owl->lock))
         return -ERESTARTSYS;
@@ -385,6 +465,13 @@ static struct owl_context *owl_create_context(void)
      */
     ret->wiphy->max_scan_ssids = 69;
 
+    /* Signal type
+     * CFG80211_SIGNAL_TYPE_UNSPEC allows us specify signal strength from 0 to
+     * 100. The reasonable value for CFG80211_SIGNAL_TYPE_MBM is -3000 to -10000
+     * (mdBm).
+     */
+    ret->wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
+
     /* register wiphy, if everything ok - there should be another wireless
      * device in system. use command: $ iw list
      * Wiphy owl
@@ -460,7 +547,6 @@ static int __init vwifi_init(void)
     g_ctx = owl_create_context();
     if (!g_ctx)
         return 1;
-    eth_random_addr(fake_bssid);
 
     mutex_init(&g_ctx->lock);
 
