@@ -16,7 +16,7 @@ function insert_module() {
     check_module $noko_name
     ret=$?
     if [ $ret -eq 0 ] ; then
-        return 0
+        sudo rmmod $noko_name > /dev/null
     fi
     echo "Installing Module $mod_name"
     sudo insmod $mod_name
