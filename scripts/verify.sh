@@ -22,7 +22,7 @@ if [ $final_ret -eq 0 ]; then
 
     DIFF=$(diff connected.log scan_bssid.log)
     if [ "$DIFF" != "" ]; then
-        final_ret = 3
+        final_ret=3
     fi
 fi
 
