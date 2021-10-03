@@ -4,10 +4,14 @@
 #include <linux/skbuff.h>
 #include <net/cfg80211.h>
 
-#include <linux/mutex.h>
-#include <linux/workqueue.h>
-
+#include <linux/hash.h>
+#include <linux/hashtable.h>
+#include <linux/list.h>
 #include <linux/moduleparam.h>
+#include <linux/mutex.h>
+#include <linux/string.h>
+#include <linux/types.h>
+#include <linux/workqueue.h>
 
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
@@ -44,10 +48,20 @@ struct owl_ndev_priv_context {
     struct wireless_dev wdev;
 };
 
-static char *ssid_list = "";
+/*
+ * AP information table entry.
+ */
+struct ap_info_entry_t {
+    struct hlist_node node;
+    u8 bssid[ETH_ALEN];
+    char ssid[SSID_MAX_LENGTH];
+};
+
+static char *ssid_list = DEFAULT_SSID_LIST;
 module_param(ssid_list, charp, 0644);
 MODULE_PARM_DESC(ssid_list, "Self-defined SSIDs.");
-static const char sdssid_delim[] = "]";
+/* AP Database */
+DECLARE_HASHTABLE(ssid_table, 4);
 
 /* helper function to retrieve main context from "priv" data of the wiphy */
 static inline struct owl_wiphy_priv_context *wiphy_get_owl_context(
@@ -72,23 +86,74 @@ static s32 rand_int(s32 low, s32 up)
     return result;
 }
 
-/* Helper function for generating BSSID from SSID */
-static void generate_bssid_with_ssid(u8 *result, const char *ssid)
+/*
+ * Murmur hash.  See https://stackoverflow.com/a/57960443
+ */
+static inline uint64_t murmurhash(const char *str)
 {
-    /*
-        Hash SSID using MurmurHash.
-        See https://stackoverflow.com/a/57960443
-    */
     uint64_t h = 525201411107845655ull;
-    for (; *ssid; ++ssid) {
-        h ^= *ssid;
+    for (; *str; ++str) {
+        h ^= *str;
         h *= 0x5bd1e9955bd1e995;
         h ^= h >> 47;
     }
+    return h;
+}
 
-    u64_to_ether_addr(h, result);
+/* Helper function for generating BSSID from SSID */
+static void generate_bssid_with_ssid(u8 *result, const char *ssid)
+{
+    u64_to_ether_addr(murmurhash(ssid), result);
     result[0] &= 0xfe; /* clear multicast bit */
     result[0] |= 0x02; /* set local assignment bit */
+}
+
+/*
+ * Updaet AP database from module parameter ssid_list
+ */
+static void update_ssids(const char *ssid_list)
+{
+    struct ap_info_entry_t *ap;
+    const char delims[] = "[]";
+    struct hlist_node *tmp;
+
+    for (char *s = (char *) ssid_list; *s != 0; /*empty*/) {
+        bool ssid_exist = false;
+        char token[SSID_MAX_LENGTH] = {0};
+        /* Get the number of token separator characters. */
+        size_t n = strspn(s, delims);
+        /* Actually skip the separators now. */
+        s += n;
+        /* Get the number of token (non-separator) characters. */
+        n = strcspn(s, delims);
+        if (n == 0)  // token not found
+            continue;
+        strncpy(token, s, n);
+        /* Point the next token. */
+        s += n;
+        /* Insert the SSID into hash*/
+        token[n] = '\0';
+        u32 key = murmurhash((char *) token);
+        hash_for_each_possible_safe (ssid_table, ap, tmp, node, key) {
+            if (strncmp(token, ap->ssid, n) == 0) {
+                ssid_exist = true;
+                break;
+            }
+        }
+        if (ssid_exist)  // SSID exist
+            continue;
+        ap = kzalloc(sizeof(struct ap_info_entry_t), GFP_KERNEL);
+        if (!ap) {
+            pr_err("Failed to alloc ap_info_entry_t incomming SSID=%s\n",
+                   token);
+            return;
+        }
+        u8 bssid[ETH_ALEN] = {0};
+        strncpy(ap->ssid, token, n);
+        generate_bssid_with_ssid(bssid, token);
+        memcpy(ap->bssid, bssid, ETH_ALEN);
+        hash_add(ssid_table, &ap->node, key);
+    }
 }
 
 /* Helper function that will prepare structure with self-defined BSS information
@@ -97,21 +162,14 @@ static void generate_bssid_with_ssid(u8 *result, const char *ssid)
  */
 static void inform_dummy_bss(struct owl_context *owl)
 {
-    const char *org_ssid_list =
-        (ssid_list && strlen(ssid_list)) ? ssid_list : DEFAULT_SSID_LIST;
-    size_t len = strlen(org_ssid_list);
-    char *ssid_list_copy =
-        kmalloc((len + 1) * sizeof(ssid_list_copy), GFP_KERNEL);
-    strncpy(ssid_list_copy, org_ssid_list, len);
-    char *ssid_list_copy_ptr = ssid_list_copy;
+    struct ap_info_entry_t *ap;
+    int i;
+    struct hlist_node *tmp;
 
-    for (char *sdssid = strsep(&ssid_list_copy, sdssid_delim); sdssid;
-         sdssid = strsep(&ssid_list_copy, sdssid_delim)) {
-        if (!++sdssid || !strlen(sdssid) || strlen(sdssid) > SSID_MAX_LENGTH)
-            continue;
-        u8 bssid[ETH_ALEN] = {};
-        generate_bssid_with_ssid(bssid, sdssid);
-
+    update_ssids(ssid_list);
+    if (hash_empty(ssid_table))
+        return;
+    hash_for_each_safe (ssid_table, i, tmp, ap, node) {
         struct cfg80211_bss *bss = NULL;
         struct cfg80211_inform_bss data = {
             /* the only channel */
@@ -121,16 +179,16 @@ static void inform_dummy_bss(struct owl_context *owl)
         };
 
         /* array of tags that retrieved from beacon frame or probe responce */
-        size_t sdssid_len = strlen(sdssid);
-        u8 *ie = kmalloc((sdssid_len + 3) * sizeof(ie), GFP_KERNEL);
+        size_t ssid_len = strlen(ap->ssid);
+        u8 *ie = kmalloc((ssid_len + 3) * sizeof(ie), GFP_KERNEL);
         ie[0] = WLAN_EID_SSID;
-        ie[1] = sdssid_len;
-        memcpy(ie + 2, sdssid, sdssid_len);
+        ie[1] = ssid_len;
+        memcpy(ie + 2, ap->ssid, ssid_len);
 
         /* It is posible to use cfg80211_inform_bss() instead. */
         bss = cfg80211_inform_bss_data(
-            owl->wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, bssid, 0,
-            WLAN_CAPABILITY_ESS, 100, ie, sdssid_len + 2, GFP_KERNEL);
+            owl->wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, ap->bssid, 0,
+            WLAN_CAPABILITY_ESS, 100, ie, ssid_len + 2, GFP_KERNEL);
 
         /* cfg80211_inform_bss_data() returns cfg80211_bss structure referefence
          * counter of which should be decremented if it is unused.
@@ -138,7 +196,6 @@ static void inform_dummy_bss(struct owl_context *owl)
         cfg80211_put_bss(owl->wiphy, bss);
         kfree(ie);
     }
-    kfree(ssid_list_copy_ptr);
 }
 
 /* "Scan" routine. It informs the kernel about "dummy" BSS and "finish" scan.
@@ -189,26 +246,15 @@ static void owl_scan_routine(struct work_struct *w)
 static bool is_valid_ssid(const char *connecting_ssid)
 {
     bool is_valid = false;
-
-    const char *org_ssid_list =
-        (ssid_list && strlen(ssid_list)) ? ssid_list : DEFAULT_SSID_LIST;
-    size_t len = strlen(org_ssid_list);
-    char *ssid_list_copy =
-        kmalloc((len + 1) * sizeof(ssid_list_copy), GFP_KERNEL);
-    strncpy(ssid_list_copy, org_ssid_list, len);
-    char *ssid_list_copy_ptr = ssid_list_copy;
-
-    for (char *sdssid = strsep(&ssid_list_copy, sdssid_delim); sdssid;
-         sdssid = strsep(&ssid_list_copy, sdssid_delim)) {
-        if (!++sdssid || !strlen(sdssid) || strlen(sdssid) > SSID_MAX_LENGTH)
-            continue;
-        if (memcmp(connecting_ssid, sdssid, strlen(sdssid) + 1) == 0) {
+    struct ap_info_entry_t *ap;
+    struct hlist_node *tmp;
+    u32 key = murmurhash((char *) connecting_ssid);
+    hash_for_each_possible_safe (ssid_table, ap, tmp, node, key) {
+        if (strcmp(connecting_ssid, ap->ssid) == 0) {
             is_valid = true;
             break;
         }
     }
-
-    kfree(ssid_list_copy_ptr);
     return is_valid;
 }
 static void owl_connect_routine(struct work_struct *w)
@@ -222,15 +268,9 @@ static void owl_connect_routine(struct work_struct *w)
         cfg80211_connect_timeout(owl->ndev, NULL, NULL, 0, GFP_KERNEL,
                                  NL80211_TIMEOUT_SCAN);
     } else {
-        /* We can connect to known ESS. If else, technically kernel will only
-         * warn. So, let's send dummy bss to the kernel before complete.
-         */
-        inform_dummy_bss(owl);
-
         /* It is possible to use cfg80211_connect_result() or
          * cfg80211_connect_done()
          */
-
         cfg80211_connect_result(owl->ndev, NULL, NULL, 0, NULL, 0,
                                 WLAN_STATUS_SUCCESS, GFP_KERNEL);
     }
