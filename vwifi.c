@@ -20,7 +20,7 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 #define SSID_MAX_LENGTH 32
 
 #ifndef DEFAULT_SSID_LIST
-#define DEFAULT_SSID_LIST "[MyHomeWifi]"
+#define DEFAULT_SSID_LIST "[MyHomeWiFi]"
 #endif
 
 struct owl_context {
