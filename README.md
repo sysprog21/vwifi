@@ -126,7 +126,7 @@ SSID Naming Convention:
 
 Don't put `[` or `]` in your SSID.
 Also, the length of each SSID should be restricted between 0 and 32.
-The default value of `ssid_list` is `[MyHomeWifi]` if it's not specified explicitly by user.
+The default value of `ssid_list` is `[MyHomeWiFi]` if it's not specified explicitly by user.
 
 Optional, you can use wireless device monitoring applications such as [wavemon](https://github.com/uoaerg/wavemon) to
 watch signal and noise levels, packet statistics, device configuration and network parameters of `vwifi`.
