@@ -39,11 +39,6 @@ There should be an entry starting with `owl0`, which is exactly the interface cr
 
 Bring up the network interface:
 ```shell
-sudo ifconfig owl0 up
-```
-
-or
-```shell
 sudo ip link set owl0 up
 ```
 
@@ -54,7 +49,7 @@ sudo iw dev
 
 You should get something as following:
 ```
-phy#7
+phy#0
 	Interface owl0
 		ifindex 12
 		wdev 0x700000001
@@ -90,12 +85,14 @@ sudo iw dev owl0 scan
 
 You should get the following:
 ```
-BSS aa:bb:cc:dd:ee:ff(on owl0)
+BSS ca:9c:00:c6:c2:eb(on owl0)
 	TSF: 0 usec (0d, 00:00:00)
 	freq: 2437
 	beacon interval: 100 TUs
 	capability: ESS (0x0001)
+	signal: -59.00 dBm
 	last seen: 0 ms ago
+	SSID: MyHomeWifi
 	SSID: MyHomeWiFi
 ```
 
