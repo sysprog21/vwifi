@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-export DEVENVROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source $DEVENVROOT/scripts/common.sh
+
+export ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source $ROOT/scripts/common.sh
 
 final_ret=0
 
-probe_module cfg80211
+probe_kmod cfg80211
 if [ $? -ne 0 ]; then
     final_ret=1
 fi
 
-insert_module vwifi.ko
+insert_kmod vwifi.ko
 if [ $? -ne 0 ]; then
     final_ret=2
 fi
@@ -27,12 +28,12 @@ if [ $final_ret -eq 0 ]; then
 fi
 
 if [ $final_ret -eq 0 ]; then
-    remove_module vwifi
+    remove_kmod vwifi
     rm scan_bssid.log connected.log
     echo "==== Test PASSED ===="
     exit 0
 fi
 
-echo "FAILED Reason Code: $final_ret"
+echo "FAILED (code: $final_ret)"
 echo "==== Test FAILED ===="
 exit $final_ret

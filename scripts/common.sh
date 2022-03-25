@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 
-function check_module() {
+function check_kmod() {
     local mod_name=$1
     lsmod | grep $mod_name > /dev/null
     if [ $? -eq 0 ]; then
@@ -10,34 +10,34 @@ function check_module() {
     return 1
 }
 
-function insert_module() {
+function insert_kmod() {
     local mod_name=$1
     local noko_name=$(echo $mod_name |sed s/.ko//)
-    check_module $noko_name
+    check_kmod $noko_name
     ret=$?
     if [ $ret -eq 0 ] ; then
         sudo rmmod $noko_name > /dev/null
     fi
     echo "Installing Module $mod_name"
     sudo insmod $mod_name
-    return $(check_module $noko_name)
+    return $(check_kmod $noko_name)
 }
 
-function probe_module() {
+function probe_kmod() {
     local mod_name=$1
-    check_module $mod_name
+    check_kmod $mod_name
     ret=$?
     if [ $ret -eq 0 ] ; then
         return 0
     fi
     echo "Installing Module $mod_name"
     sudo modprobe $mod_name
-    return $(check_module $mod_name)
+    return $(check_kmod $mod_name)
 }
 
-function remove_module() {
+function remove_kmod() {
     local mod_name=$1
-    check_module $mod_name
+    check_kmod $mod_name
     ret=$?
     if [ $ret -eq 1 ] ; then
         return 0
