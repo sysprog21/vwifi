@@ -27,7 +27,7 @@ sudo modprobe cfg80211
 
 Insert `vwifi` driver:
 ```shell
-sudo insmod vwifi.ko ssid_list='[MyWifi_1][MyWifi_2][MyHomeWifi]'
+sudo insmod vwifi.ko ssid_list='[MyHomeWiFi][MyWifi_1][MyWifi_2]'
 ```
 
 Check network interfaces:
@@ -103,7 +103,7 @@ sudo iw dev owl0 connect MyHomeWiFi
 
 Validate the connection:
 ```shell
-iwconfig owl0
+sudo iw dev owl0 link
 ```
 
 Reference output:
@@ -116,7 +116,7 @@ owl0      IEEE 802.11  ESSID:"MyHomeWiFi"
 
 Change wifi list:
 ```
-echo -n "[MyWifi_1][MyWifi_2][MyWifi_3]" | sudo tee /sys/module/vwifi/parameters/ssid_list
+echo -n "[MyHomeWiFi][MyWifi_1][MyWifi_2]" | sudo tee /sys/module/vwifi/parameters/ssid_list
 ```
 
 SSID Naming Convention:
