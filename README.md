@@ -51,8 +51,8 @@ You should get something as following:
 ```
 phy#0
 	Interface owl0
-		ifindex 12
-		wdev 0x700000001
+		ifindex 3
+		wdev 0x1
 		addr 00:00:00:00:00:00
 		type managed
 ```
@@ -65,11 +65,13 @@ sudo iw list
 Reference output:
 ```
 Wiphy owl
-	wiphy index: 7
 	max # scan SSIDs: 69
 	max scan IEs length: 0 bytes
 	max # sched scan SSIDs: 0
 	max # match sets: 0
+	max # scan plans: 1
+	max scan plan interval: -1
+	max scan plan iterations: 0
 	Retry short limit: 7
 	Retry long limit: 4
 	Coverage class: 0 (up to 0m)
@@ -108,10 +110,10 @@ sudo iw dev owl0 link
 
 Reference output:
 ```
-owl0      IEEE 802.11  ESSID:"MyHomeWiFi"
-          Mode:Managed  Frequency:2.437 GHz  Access Point: AA:BB:CC:DD:EE:FF
-          Retry short limit:7   RTS thr:off   Fragment thr:off
-          Power Management:on
+Connected to 26:05:d1:60:34:c8 (on owl0)
+	SSID: MyHomeWiFi
+	freq: 2437
+command failed: Operation not supported (-95)
 ```
 
 Change wifi list:
