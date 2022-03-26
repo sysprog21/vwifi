@@ -1,6 +1,6 @@
 # vwifi: A Simple Virtual Wireless Driver for Linux
 
-`vwifi` implements a minimal interface to achieve basic functonalities,
+`vwifi` implements a minimal interface to achieve basic functionalities,
 such as scanning dummy Wi-Fi network, connecting, and disconnecting from it.
 `vwifi` is based on [cfg80211 subsystem](https://www.kernel.org/doc/html/latest/driver-api/80211/cfg80211.html),
 which works together with FullMAC drivers. At present, it only supports station mode (STA).
