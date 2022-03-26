@@ -5,21 +5,29 @@ such as scanning dummy Wi-Fi network, connecting, and disconnecting from it.
 `vwifi` is based on [cfg80211 subsystem](https://www.kernel.org/doc/html/latest/driver-api/80211/cfg80211.html),
 which works together with FullMAC drivers. At present, it only supports station mode (STA).
 
-## Build
+## Prerequisite
+
+The following packages must be installed before building `vcam`.
+
+In order to compile the kernel driver successfully, package versions
+of currently used kernel, kernel-devel and kernel-headers need to be matched.
+```shell
+$ sudo apt install linux-headers-$(uname -r)
+```
+
+Since `vwifi` relies on the Linux wireless (IEEE-802.11) subsystem, [iw](https://wireless.wiki.kernel.org/en/users/documentation/iw) is necessary for retrieving more information and configuring:
+```shell
+sudo apt install iw
+```
+
+## Build and Run
 
 Run `make` to build the kernel module:
 ```shell
 make
 ```
 
-## Usage
-
-Get necessary packages in advance:
-```shell
-sudo apt install iw
-```
-
-Add `cfg80211` kernel module:
+Load  `cfg80211` kernel module:
 ```shell
 sudo modprobe cfg80211
 ```
