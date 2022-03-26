@@ -17,7 +17,6 @@ make
 Get necessary packages in advance:
 ```shell
 sudo apt install iw
-sudo apt install wireless-tools
 ```
 
 Add `cfg80211` kernel module:
