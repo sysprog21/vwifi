@@ -19,7 +19,7 @@ if [ $final_ret -eq 0 ]; then
     sudo ip link set owl0 up
     sudo iw dev owl0 scan | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| head -n 1 > scan_bssid.log
     sudo iw dev owl0 connect MyHomeWiFi
-    sudo iw dev owl0 link 2> /dev/null | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > connected.log
+    sudo iw dev owl0 link | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > connected.log
 
     DIFF=$(diff connected.log scan_bssid.log)
     if [ "$DIFF" != "" ]; then

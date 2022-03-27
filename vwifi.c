@@ -378,6 +378,18 @@ static int owl_disconnect(struct wiphy *wiphy,
     return 0;
 }
 
+/**
+ * Called when rtnl lock was acquired.
+ */
+static int owl_get_station(struct wiphy *wiphy,
+                           struct net_device *dev,
+                           const u8 *mac,
+                           struct station_info *sinfo)
+{
+    /* TODO: Get station infomation */
+    return 0;
+}
+
 /* Structure of functions for FullMAC 80211 drivers.
  * Functions implemented along with fields/flags in wiphy structure would
  * represent drivers features. This module can only perform "scan" and
@@ -388,6 +400,7 @@ static struct cfg80211_ops owl_cfg_ops = {
     .scan = owl_scan,
     .connect = owl_connect,
     .disconnect = owl_disconnect,
+    .get_station = owl_get_station,
 };
 
 /* Network packet transmit.
