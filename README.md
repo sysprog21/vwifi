@@ -120,7 +120,6 @@ Reference output:
 Connected to 26:05:d1:60:34:c8 (on owl0)
 	SSID: MyHomeWiFi
 	freq: 2437
-command failed: Operation not supported (-95)
 ```
 
 Change wifi list:
