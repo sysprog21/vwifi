@@ -7,7 +7,7 @@ which works together with FullMAC drivers. At present, it only supports station 
 
 ## Prerequisite
 
-The following packages must be installed before building `vcam`.
+The following packages must be installed before building `vwifi`.
 
 In order to compile the kernel driver successfully, package versions
 of currently used kernel, kernel-devel and kernel-headers need to be matched.
