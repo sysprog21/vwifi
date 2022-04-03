@@ -1,17 +1,19 @@
 #include <linux/module.h>
 
-#include <linux/random.h>
-#include <linux/skbuff.h>
-#include <net/cfg80211.h>
-
 #include <linux/hash.h>
 #include <linux/hashtable.h>
 #include <linux/list.h>
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
+#include <linux/random.h>
+#include <linux/skbuff.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
+#include <net/cfg80211.h>
+#include <uapi/linux/icmp.h>
+#include <uapi/linux/if_arp.h>
+#include <uapi/linux/ip.h>
 
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
@@ -27,6 +29,12 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 #define DEFAULT_SSID_LIST "[MyHomeWiFi]"
 #endif
 
+struct owl_packet {
+    int datalen;
+    u8 data[ETH_DATA_LEN];
+    struct list_head list;
+};
+
 struct owl_context {
     struct wiphy *wiphy;
     struct net_device *ndev;
@@ -34,9 +42,12 @@ struct owl_context {
     struct mutex lock;
     struct work_struct ws_connect, ws_disconnect;
     char connecting_ssid[SSID_MAX_LENGTH];
+    u8 connecting_bssid[ETH_ALEN];
     u16 disconnect_reason_code;
     struct work_struct ws_scan;
     struct cfg80211_scan_request *scan_request;
+    struct net_device_stats stats;
+    struct list_head rx_queue;
 };
 
 struct owl_wiphy_priv_context {
@@ -250,13 +261,28 @@ static bool is_valid_ssid(const char *connecting_ssid)
     struct hlist_node *tmp;
     u32 key = murmurhash((char *) connecting_ssid);
     hash_for_each_possible_safe (ssid_table, ap, tmp, node, key) {
-        if (strcmp(connecting_ssid, ap->ssid) == 0) {
+        if (!strcmp(connecting_ssid, ap->ssid)) {
             is_valid = true;
             break;
         }
     }
     return is_valid;
 }
+
+static void get_connecting_bssid(const char *connecting_ssid,
+                                 u8 *connecting_bssid)
+{
+    struct ap_info_entry_t *ap;
+    struct hlist_node *tmp;
+    u32 key = murmurhash((char *) connecting_ssid);
+    hash_for_each_possible_safe (ssid_table, ap, tmp, node, key) {
+        if (strcmp(connecting_ssid, ap->ssid) == 0) {
+            memcpy(connecting_bssid, ap->bssid, ETH_ALEN);
+            break;
+        }
+    }
+}
+
 static void owl_connect_routine(struct work_struct *w)
 {
     struct owl_context *owl = container_of(w, struct owl_context, ws_connect);
@@ -345,7 +371,7 @@ static int owl_connect(struct wiphy *wiphy,
 
     memcpy(owl->connecting_ssid, sme->ssid, ssid_len);
     owl->connecting_ssid[ssid_len] = 0;
-
+    get_connecting_bssid(owl->connecting_ssid, owl->connecting_bssid);
     mutex_unlock(&owl->lock);
 
     if (!schedule_work(&owl->ws_connect))
@@ -403,6 +429,132 @@ static struct cfg80211_ops owl_cfg_ops = {
     .get_station = owl_get_station,
 };
 
+static int owl_ndo_open(struct net_device *dev)
+{
+    /* The first byte is '\0' to avoid being a multicast
+     * address (the first byte of multicast addrs is odd).
+     */
+    struct owl_context *owl = ndev_get_owl_context(dev)->owl;
+    char intf_name[ETH_ALEN] = {0};
+    snprintf(&intf_name[1], ETH_ALEN - 1, "%s", dev->name);
+    memcpy(dev->dev_addr, intf_name, ETH_ALEN);
+
+    INIT_LIST_HEAD(&owl->rx_queue);
+    netif_start_queue(dev);
+    return 0;
+}
+
+static int owl_ndo_stop(struct net_device *dev)
+{
+    struct owl_context *owl = ndev_get_owl_context(dev)->owl;
+    struct owl_packet *pkt, *is = NULL;
+    list_for_each_entry_safe (pkt, is, &owl->rx_queue, list) {
+        list_del(&pkt->list);
+        kfree(pkt);
+    }
+    netif_stop_queue(dev);
+    return 0;
+}
+
+static struct net_device_stats *owl_ndo_get_stats(struct net_device *dev)
+{
+    struct owl_context *owl = ndev_get_owl_context(dev)->owl;
+    return &owl->stats;
+}
+
+/*
+ * Receive a packet: retrieve, encapsulate and pass over to upper levels
+ */
+static void owl_rx(struct net_device *dev)
+{
+    struct owl_context *owl = ndev_get_owl_context(dev)->owl;
+    struct sk_buff *skb;
+    int hit_ours_pkt = 0;
+    int offset = 0;
+
+    struct owl_packet *pkt;
+    if (list_empty(&owl->rx_queue)) {
+        printk(KERN_NOTICE "owl rx: No packet in rx_queue\n");
+        goto out;
+    }
+    pkt = list_first_entry(&owl->rx_queue, struct owl_packet, list);
+    /* TODO: Modify the packet and forward to destination */
+    struct ethhdr *eth = (struct ethhdr *) &pkt->data[offset];
+    offset += sizeof(struct ethhdr);
+    /* Process ARP Request */
+    if (eth->h_proto == htons(ETH_P_ARP)) {
+        printk(KERN_NOTICE "ARP request received, send ARP reply to sta\n");
+        hit_ours_pkt = 1;
+        // dst mac
+        ether_addr_copy(eth->h_dest, dev->dev_addr);
+        // src mac
+        ether_addr_copy(eth->h_source, owl->connecting_bssid);
+        // arp reply opcode 0x2
+        struct arphdr *arp = (struct arphdr *) &pkt->data[offset];
+        offset += sizeof(struct arphdr);
+        arp->ar_op = htons(ARPOP_REPLY);
+        // TODO: Need more efficient to get packet field offset
+        // Update Sender
+        u8 tmp[10];
+        memcpy(tmp, &pkt->data[22], 10);
+        ether_addr_copy(&pkt->data[32],
+                        eth->h_source);  // Sender mac is station source mac.
+        memcpy(&pkt->data[22], &pkt->data[32], 10);
+        // Update Target
+        memcpy(&pkt->data[32], tmp, 10);
+    }
+    /* Process ICMP Request */
+    if (eth->h_proto == htons(ETH_P_IP)) {
+        struct iphdr *ip = (struct iphdr *) &pkt->data[offset];
+        offset += sizeof(struct iphdr);
+        struct icmphdr *icmp = (struct icmphdr *) &pkt->data[offset];
+        offset += sizeof(struct icmphdr);
+        if (ip->protocol == 0x1 && icmp->type == ICMP_ECHO) {
+            // TODO: Need more efficient to get packet field offset
+            hit_ours_pkt = 1;
+            printk(KERN_NOTICE
+                   "ICMP request received, send echo reply to sta\n");
+            // dmac smac exchange
+            u8 tmp[8];
+            memcpy(tmp, &pkt->data[0], 6);
+            memcpy(&pkt->data[0], &pkt->data[6], 6);
+            memcpy(&pkt->data[6], tmp, 6);
+            // da sa exchange
+            memcpy(tmp, &pkt->data[26], 4);
+            memcpy(&pkt->data[26], &pkt->data[30], 4);
+            memcpy(&pkt->data[30], tmp, 4);
+            // icmp reply
+            pkt->data[34] = 0;
+        }
+    }
+    if (!hit_ours_pkt)
+        goto pkt_free;
+
+    print_hex_dump(KERN_DEBUG, "Sta Rx: ", DUMP_PREFIX_OFFSET, 16, 1, pkt->data,
+                   pkt->datalen, false);
+    /* Put raw packet into socket buffer */
+    skb = dev_alloc_skb(pkt->datalen + 2);
+    if (!skb) {
+        printk(KERN_NOTICE "owl rx: low on mem - packet dropped\n");
+        owl->stats.rx_dropped++;
+        goto pkt_free;
+    }
+    skb_reserve(skb, 2); /* align IP on 16B boundary */
+    memcpy(skb_put(skb, pkt->datalen), pkt->data, pkt->datalen);
+    /* Write metadata, and then pass to the receive level */
+    skb->dev = dev;
+    skb->protocol = eth_type_trans(skb, dev);
+    skb->ip_summed = CHECKSUM_UNNECESSARY; /* don't check it */
+    netif_rx(skb);
+    owl->stats.rx_packets++;
+    owl->stats.rx_bytes += pkt->datalen;
+pkt_free:
+    list_del(&pkt->list);
+    kfree(pkt);
+out:
+    return;
+}
+
 /* Network packet transmit.
  * Callback called by the kernel when packet of data should be sent.
  * In this example it does nothing.
@@ -410,8 +562,22 @@ static struct cfg80211_ops owl_cfg_ops = {
 static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
                                       struct net_device *dev)
 {
+    struct owl_context *owl = ndev_get_owl_context(dev)->owl;
     /* Don't forget to cleanup skb, as its ownership moved to xmit callback. */
+    owl->stats.tx_packets++;
+    owl->stats.tx_bytes += skb->len;
+    struct owl_packet *pkt;
+    pkt = kmalloc(sizeof(struct owl_packet), GFP_KERNEL);
+    if (!pkt) {
+        printk(KERN_NOTICE "Ran out of memory allocating packet pool\n");
+        return NETDEV_TX_OK;
+    }
+    memcpy(&pkt->data, skb->data, skb->len);
+    pkt->datalen = skb->len;
+    list_add_tail(&pkt->list, &owl->rx_queue);  // enqueue
     kfree_skb(skb);
+    /* Directly send to rx_queue, simulate the rx interrupt*/
+    owl_rx(dev);
     return NETDEV_TX_OK;
 }
 
@@ -420,7 +586,10 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
  * sent.
  */
 static struct net_device_ops owl_ndev_ops = {
+    .ndo_open = owl_ndo_open,
+    .ndo_stop = owl_ndo_stop,
     .ndo_start_xmit = owl_ndo_start_xmit,
+    .ndo_get_stats = owl_ndo_get_stats,
 };
 
 /* Array of "supported" channels in 2GHz band. It is required for wiphy.
@@ -556,6 +725,7 @@ static struct owl_context *owl_create_context(void)
 
     /* set network device hooks. should implement ndo_start_xmit() at least */
     ret->ndev->netdev_ops = &owl_ndev_ops;
+    ret->ndev->features |= NETIF_F_HW_CSUM;
 
     /* Add here proper net_device initialization. */
 

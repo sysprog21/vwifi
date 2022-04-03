@@ -16,10 +16,12 @@ if [ $? -ne 0 ]; then
 fi
 
 if [ $final_ret -eq 0 ]; then
-    sudo ip link set owl0 up
     sudo iw dev owl0 scan | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| head -n 1 > scan_bssid.log
     sudo iw dev owl0 connect MyHomeWiFi
     sudo iw dev owl0 link | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > connected.log
+    sudo ip link set owl0 up
+    sudo ip addr add 192.168.0.1/24 dev owl0
+    ping -c 4 192.168.0.2
 
     DIFF=$(diff connected.log scan_bssid.log)
     if [ "$DIFF" != "" ]; then
