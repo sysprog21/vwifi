@@ -142,6 +142,22 @@ sudo apt install wavemon
 <p align="center"><img src="assets/wavemon.png" alt="logo image" width=40%></p>
 
 
+Redirect Packet to Kernel Network Stack:
+
+On the host ingress side, if the incoming packet source IP or source MAC  is same as the host, the kernel will ignore the packet.
+
+To allow the kernel to handle the protocol packets, we create two network namespaces (`netns`) to isolate the host network environment and viwifi network environment.
+
+A network namespace is a logical copy of the network stack from the host system. Network namespaces are useful for setting up containers or virtual environments. Each namespace has its IP addresses, network interfaces, routing tables, and so forth.
+
+On the other hand, `netns` need an interface to communicate with host network with L2 ability, MACVLAN Bridge mode matches the requirement. 
+The `MACVLAN` has two purposes in vwifi testing scenario.
+1. Create L2 virtual network interface for `netns`.
+2. Binding L2 virtual network with vwifi network interface.
+
+Hence, when `owl0` received the packet. It will send to the namespace and allow kernel network stack to handle the protocol packet.
+
+<p align="center"><img src="assets/macvlan.png" alt="logo image" width=40%></p>
 ## License
 
 `vwifi` is released under the MIT license. Use of this source code is governed
