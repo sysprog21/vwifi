@@ -60,8 +60,9 @@ struct ap_info_entry_t {
 static char *ssid_list = DEFAULT_SSID_LIST;
 module_param(ssid_list, charp, 0644);
 MODULE_PARM_DESC(ssid_list, "Self-defined SSIDs.");
+
 /* AP Database */
-DECLARE_HASHTABLE(ssid_table, 4);
+static DECLARE_HASHTABLE(ssid_table, 4);
 
 /* helper function to retrieve main context from "priv" data of the wiphy */
 static inline struct owl_wiphy_priv_context *wiphy_get_owl_context(
