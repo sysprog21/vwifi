@@ -339,7 +339,7 @@ static int owl_connect(struct wiphy *wiphy,
 {
     struct owl_context *owl = wiphy_get_owl_context(wiphy)->owl;
     size_t ssid_len =
-        sme->ssid_len > SSID_MAX_LENGTH ? SSID_MAX_LENGTH : sme->ssid_len;
+        sme->ssid_len >= SSID_MAX_LENGTH ? SSID_MAX_LENGTH - 1: sme->ssid_len;
 
     if (mutex_lock_interruptible(&owl->lock))
         return -ERESTARTSYS;
