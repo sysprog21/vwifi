@@ -33,7 +33,7 @@ struct owl_context {
 
     struct mutex lock;
     struct work_struct ws_connect, ws_disconnect;
-    char connecting_ssid[SSID_MAX_LENGTH];
+    char connecting_ssid[SSID_MAX_LENGTH + 1]; /* plus one for '\0' */
     u16 disconnect_reason_code;
     struct work_struct ws_scan;
     struct cfg80211_scan_request *scan_request;
