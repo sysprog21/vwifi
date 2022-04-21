@@ -95,7 +95,7 @@ sudo iw dev owl0 scan
 You should get the following:
 ```
 BSS ca:9c:00:c6:c2:eb(on owl0)
-	TSF: 0 usec (0d, 00:00:00)
+	TSF: 47065806941 usec (0d, 13:04:25)
 	freq: 2437
 	beacon interval: 100 TUs
 	capability: ESS (0x0001)
