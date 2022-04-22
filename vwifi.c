@@ -186,9 +186,16 @@ static void inform_dummy_bss(struct owl_context *owl)
         ie[1] = ssid_len;
         memcpy(ie + 2, ap->ssid, ssid_len);
 
+        /* Using CLOCK_BOOTTIME clock, which won't be affected by
+         * changes in system time-of-day clock, and includes any time
+         * that the system is suspended. Thus, it's suitable for
+         * tsf to synchronize the machines in BSS.
+         */
+        u64 tsf = div_u64(ktime_get_boottime_ns(), 1000);
+
         /* It is posible to use cfg80211_inform_bss() instead. */
         bss = cfg80211_inform_bss_data(
-            owl->wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, ap->bssid, 0,
+            owl->wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, ap->bssid, tsf,
             WLAN_CAPABILITY_ESS, 100, ie, ssid_len + 2, GFP_KERNEL);
 
         /* cfg80211_inform_bss_data() returns cfg80211_bss structure referefence
