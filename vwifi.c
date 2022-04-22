@@ -10,6 +10,7 @@
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/string.h>
+#include <linux/timer.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
@@ -27,6 +28,8 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 #define DEFAULT_SSID_LIST "[MyHomeWiFi]"
 #endif
 
+#define SCAN_TIMEOUT_MS 100
+
 struct owl_context {
     struct wiphy *wiphy;
     struct net_device *ndev;
@@ -35,7 +38,8 @@ struct owl_context {
     struct work_struct ws_connect, ws_disconnect;
     char connecting_ssid[SSID_MAX_LENGTH + 1]; /* plus one for '\0' */
     u16 disconnect_reason_code;
-    struct work_struct ws_scan;
+    struct work_struct ws_scan, ws_scan_timeout;
+    struct timer_list scan_timeout;
     struct cfg80211_scan_request *scan_request;
 };
 
@@ -110,7 +114,7 @@ static void generate_bssid_with_ssid(u8 *result, const char *ssid)
 }
 
 /*
- * Updaet AP database from module parameter ssid_list
+ * Update AP database from module parameter ssid_list
  */
 static void update_ssids(const char *ssid_list)
 {
@@ -179,7 +183,6 @@ static void inform_dummy_bss(struct owl_context *owl)
             .signal = rand_int(-100, -30) * 100,
         };
 
-        /* array of tags that retrieved from beacon frame or probe responce */
         size_t ssid_len = strlen(ap->ssid);
         u8 *ie = kmalloc((ssid_len + 3) * sizeof(ie), GFP_KERNEL);
         ie[0] = WLAN_EID_SSID;
@@ -206,29 +209,18 @@ static void inform_dummy_bss(struct owl_context *owl)
     }
 }
 
-/* "Scan" routine. It informs the kernel about "dummy" BSS and "finish" scan.
- * When scan is done, it should call cfg80211_scan_done() to inform the kernel
- * that scan is finished. This routine called through workqueue, when the
- * kernel asks to scan through cfg80211_ops.
- */
-static void owl_scan_routine(struct work_struct *w)
+/* Informs the "dummy" BSS to kernel, and calls cfg80211_scan_done() to finish
+ * scan. */
+static void owl_scan_timeout_work(struct work_struct *w)
 {
-    struct owl_context *owl = container_of(w, struct owl_context, ws_scan);
+    struct owl_context *owl =
+        container_of(w, struct owl_context, ws_scan_timeout);
     struct cfg80211_scan_info info = {
         /* if scan was aborted by user (calling cfg80211_ops->abort_scan) or by
          * any driver/hardware issue - field should be set to "true"
          */
         .aborted = false,
     };
-
-    /* Pretend to do something.
-     * FIXME: for unknown reason, it can not call cfg80211_scan_done right
-     * away after cfg80211_ops->scan(), otherwise netlink client would not
-     * get message with "scan done". Is it because "scan_routine" and
-     * cfg80211_ops->scan() may run in concurrent and cfg80211_scan_done()
-     * called before cfg80211_ops->scan() returns?
-     */
-    msleep(100);
 
     /* inform with dummy BSS */
     inform_dummy_bss(owl);
@@ -242,6 +234,36 @@ static void owl_scan_routine(struct work_struct *w)
     owl->scan_request = NULL;
 
     mutex_unlock(&owl->lock);
+}
+
+/* Callback called when the scan timer timeouts. This function just schedules
+ * the timeout work and offloads the job of informing "dummy" BSS to kernel
+ * onto it.
+ */
+static void owl_scan_timeout(struct timer_list *t)
+{
+    struct owl_context *owl = container_of(t, struct owl_context, scan_timeout);
+
+    if (owl->scan_request)
+        schedule_work(&owl->ws_scan_timeout);
+}
+
+/* "Scan routine". It simulates a fake BSS scan (In fact, do nothing.), and sets
+ * a scan timer to start from then. Once the timer timeouts, the timeout
+ * routine owl_scan_timeout() will be invoked, which schedules a timeout work,
+ * and the timeout work will inform the kernel about "dummy" BSS and finish the
+ * scan.
+ */
+static void owl_scan_routine(struct work_struct *w)
+{
+    struct owl_context *owl = container_of(w, struct owl_context, ws_scan);
+
+    /* In real world driver, we scan BSS here. But viwifi doesn't, because we
+     * already store dummy BSS in ssid hash table. So we just set a scan timeout
+     * after specific jiffies, and inform "dummy" BSS to kernel and call
+     * cfg80211_scan_done() by timeout worker.
+     */
+    mod_timer(&owl->scan_timeout, jiffies + msecs_to_jiffies(SCAN_TIMEOUT_MS));
 }
 
 /* It checks SSID of the ESS to connect and informs the kernel that connection
@@ -312,7 +334,6 @@ static void owl_disconnect_routine(struct work_struct *w)
 /* callback called by the kernel when user decided to scan.
  * This callback should initiate scan routine(through work_struct) and exit with
  * 0 if everything is ok.
- * Scan routine should be finished with cfg80211_scan_done() call.
  */
 static int owl_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 {
@@ -617,6 +638,8 @@ static int __init vwifi_init(void)
     g_ctx->disconnect_reason_code = 0;
     INIT_WORK(&g_ctx->ws_scan, owl_scan_routine);
     g_ctx->scan_request = NULL;
+    INIT_WORK(&g_ctx->ws_scan_timeout, owl_scan_timeout_work);
+    timer_setup(&g_ctx->scan_timeout, owl_scan_timeout, 0);
 
     return 0;
 }
