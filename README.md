@@ -158,6 +158,7 @@ The `MACVLAN` provides two essential functionalities for testing scenario.
 Hence, when `owl0` received the packet, it will send to the namespace and allow kernel network stack manipulating the protocol packets.
 
 <p align="center"><img src="assets/macvlan.png" alt="logo image" width=40%></p>
+
 ## License
 
 `vwifi` is released under the MIT license. Use of this source code is governed
