@@ -1,15 +1,10 @@
-#include <linux/module.h>
-
-#include <linux/hash.h>
 #include <linux/hashtable.h>
 #include <linux/list.h>
-#include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/random.h>
 #include <linux/skbuff.h>
 #include <linux/string.h>
 #include <linux/timer.h>
-#include <linux/types.h>
 #include <linux/workqueue.h>
 #include <net/cfg80211.h>
 
@@ -20,7 +15,7 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 #define WIPHY_NAME "owl" /* Our WireLess */
 #define NDEV_NAME WIPHY_NAME "%d"
 #define SINKDEV_NAME NDEV_NAME "sink"
-#define NDEV_NUMS 2
+#define NR_NDEV 2
 
 /* According to 802.11 Standard, SSID has max len 32. */
 #define SSID_MAX_LENGTH 32
@@ -29,7 +24,7 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 #define DEFAULT_SSID_LIST "[MyHomeWiFi]"
 #endif
 
-#define SCAN_TIMEOUT_MS 100
+#define SCAN_TIMEOUT_MS 100 /*< millisecond */
 
 struct owl_packet {
     int datalen;
@@ -47,7 +42,8 @@ struct owl_context {
     struct work_struct ws_scan, ws_scan_timeout;
     struct timer_list scan_timeout;
     struct cfg80211_scan_request *scan_request;
-    /* List head for maintain multiple network device private context*/
+
+    /* List head for maintain multiple network device private context */
     struct list_head netintf_list;
 };
 
@@ -55,29 +51,24 @@ struct owl_wiphy_priv_context {
     struct owl_context *owl;
 };
 
-/*
- * Network Device Private Data Context
- */
+/* Network Device Private Data Context */
 struct owl_ndev_priv_context {
     struct owl_context *owl;
     struct wireless_dev wdev;
     struct net_device *ndev;
     struct net_device_stats stats;
-    /* Head of received packet queue */
-    struct list_head rx_queue;
+    struct list_head rx_queue; /*< Head of received packet queue */
+
     /* List entry for maintaining multiple net device private data in
      * owl_context.netintf_list.
-     * In owl_create_context function, two net_device will be created.
-     * one is owl0, another is owl0sink.
-     * `owl0` is for wifi STATION.
-     * `owl0sink` will be simulated as a mock for redirecting packet to kernel.
+     * In owl_create_context function, two net_device will be created:
+     * - owl0 is for wifi STATION.
+     * - owl0sink will be simulated as a mock for redirecting packet to kernel.
      */
     struct list_head list;
 };
 
-/*
- * AP information table entry.
- */
+/* AP information table entry */
 struct ap_info_entry_t {
     struct hlist_node node;
     u8 bssid[ETH_ALEN];
@@ -88,7 +79,7 @@ static char *ssid_list = DEFAULT_SSID_LIST;
 module_param(ssid_list, charp, 0644);
 MODULE_PARM_DESC(ssid_list, "Self-defined SSIDs.");
 
-/* AP Database */
+/* AP database */
 static DECLARE_HASHTABLE(ssid_table, 4);
 
 /* helper function to retrieve main context from "priv" data of the wiphy */
@@ -114,8 +105,8 @@ static s32 rand_int(s32 low, s32 up)
     return result;
 }
 
-/*
- * Murmur hash.  See https://stackoverflow.com/a/57960443
+/* Murmur hash.
+ * See https://stackoverflow.com/a/57960443
  */
 static inline uint64_t murmurhash(const char *str)
 {
@@ -136,9 +127,7 @@ static void generate_bssid_with_ssid(u8 *result, const char *ssid)
     result[0] |= 0x02; /* set local assignment bit */
 }
 
-/*
- * Update AP database from module parameter ssid_list
- */
+/* Update AP database from module parameter ssid_list */
 static void update_ssids(const char *ssid_list)
 {
     struct ap_info_entry_t *ap;
@@ -148,18 +137,18 @@ static void update_ssids(const char *ssid_list)
     for (char *s = (char *) ssid_list; *s != 0; /*empty*/) {
         bool ssid_exist = false;
         char token[SSID_MAX_LENGTH] = {0};
+
         /* Get the number of token separator characters. */
         size_t n = strspn(s, delims);
-        /* Actually skip the separators now. */
-        s += n;
+        s += n; /* Actually skip the separators */
         /* Get the number of token (non-separator) characters. */
         n = strcspn(s, delims);
         if (n == 0)  // token not found
             continue;
         strncpy(token, s, n);
-        /* Point the next token. */
-        s += n;
-        /* Insert the SSID into hash*/
+        s += n; /* Point the next token */
+
+        /* Insert the SSID into hash */
         token[n] = '\0';
         u32 key = murmurhash((char *) token);
         hash_for_each_possible_safe (ssid_table, ap, tmp, node, key) {
@@ -168,8 +157,9 @@ static void update_ssids(const char *ssid_list)
                 break;
             }
         }
-        if (ssid_exist)  // SSID exist
+        if (ssid_exist) /* SSID exists */
             continue;
+
         ap = kzalloc(sizeof(struct ap_info_entry_t), GFP_KERNEL);
         if (!ap) {
             pr_err("Failed to alloc ap_info_entry_t incomming SSID=%s\n",
@@ -197,6 +187,7 @@ static void inform_dummy_bss(struct owl_context *owl)
     update_ssids(ssid_list);
     if (hash_empty(ssid_table))
         return;
+
     hash_for_each_safe (ssid_table, i, tmp, ap, node) {
         struct cfg80211_bss *bss = NULL;
         struct cfg80211_inform_bss data = {
@@ -232,8 +223,9 @@ static void inform_dummy_bss(struct owl_context *owl)
     }
 }
 
-/* Informs the "dummy" BSS to kernel, and calls cfg80211_scan_done() to finish
- * scan. */
+/* Inform the "dummy" BSS to kernel and call cfg80211_scan_done() to finish
+ * scan.
+ */
 static void owl_scan_timeout_work(struct work_struct *w)
 {
     struct owl_context *owl =
@@ -301,6 +293,7 @@ static bool is_valid_ssid(const char *connecting_ssid)
     bool is_valid = false;
     struct ap_info_entry_t *ap;
     struct hlist_node *tmp;
+
     u32 key = murmurhash((char *) connecting_ssid);
     hash_for_each_possible_safe (ssid_table, ap, tmp, node, key) {
         if (!strcmp(connecting_ssid, ap->ssid)) {
@@ -308,6 +301,7 @@ static bool is_valid_ssid(const char *connecting_ssid)
             break;
         }
     }
+
     return is_valid;
 }
 
@@ -329,8 +323,10 @@ static void owl_connect_routine(struct work_struct *w)
 {
     struct owl_context *owl = container_of(w, struct owl_context, ws_connect);
     struct owl_ndev_priv_context *item = NULL;
+
     if (mutex_lock_interruptible(&owl->lock))
         return;
+
     if (!is_valid_ssid(owl->connecting_ssid)) {
         item = list_first_entry(&owl->netintf_list,
                                 struct owl_ndev_priv_context, list);
@@ -362,8 +358,10 @@ static void owl_disconnect_routine(struct work_struct *w)
     struct owl_context *owl =
         container_of(w, struct owl_context, ws_disconnect);
     struct owl_ndev_priv_context *item = NULL;
+
     if (mutex_lock_interruptible(&owl->lock))
         return;
+
     item = list_first_entry(&owl->netintf_list, struct owl_ndev_priv_context,
                             list);
     cfg80211_disconnected(item->ndev, owl->disconnect_reason_code, NULL, 0,
@@ -449,9 +447,7 @@ static int owl_disconnect(struct wiphy *wiphy,
     return 0;
 }
 
-/**
- * Called when rtnl lock was acquired.
- */
+/* Called when rtnl lock was acquired. */
 static int owl_get_station(struct wiphy *wiphy,
                            struct net_device *dev,
                            const u8 *mac,
@@ -504,19 +500,19 @@ static struct net_device_stats *owl_ndo_get_stats(struct net_device *dev)
     return &np->stats;
 }
 
-/*
- * Receive a packet: retrieve, encapsulate and pass over to upper levels
- */
+/* Receive a packet: retrieve, encapsulate and pass over to upper levels */
 static void owl_handle_rx(struct net_device *dev)
 {
     struct owl_ndev_priv_context *np = ndev_get_owl_context(dev);
     struct sk_buff *skb;
     char prefix[16];
     struct owl_packet *pkt;
+
     if (list_empty(&np->rx_queue)) {
         printk(KERN_NOTICE "owl rx: No packet in rx_queue\n");
         return;
     }
+
     pkt = list_first_entry(&np->rx_queue, struct owl_packet, list);
     snprintf(prefix, 16, "%s Rx ", dev->name);
     print_hex_dump(KERN_DEBUG, prefix, DUMP_PREFIX_OFFSET, 16, 1, pkt->data,
@@ -530,6 +526,7 @@ static void owl_handle_rx(struct net_device *dev)
     }
     skb_reserve(skb, 2); /* align IP on 16B boundary */
     memcpy(skb_put(skb, pkt->datalen), pkt->data, pkt->datalen);
+
     /* Write metadata, and then pass to the receive level */
     skb->dev = dev;
     skb->protocol = eth_type_trans(skb, dev);
@@ -537,6 +534,7 @@ static void owl_handle_rx(struct net_device *dev)
     netif_rx(skb);
     np->stats.rx_packets++;
     np->stats.rx_bytes += pkt->datalen;
+
 pkt_free:
     list_del(&pkt->list);
     kfree(pkt);
@@ -552,10 +550,11 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
     struct owl_ndev_priv_context *np = ndev_get_owl_context(dev);
     struct owl_context *owl = ndev_get_owl_context(dev)->owl;
     struct owl_ndev_priv_context *dest_np = NULL;
+    struct owl_packet *pkt;
+
     /* Don't forget to cleanup skb, as its ownership moved to xmit callback. */
     np->stats.tx_packets++;
     np->stats.tx_bytes += skb->len;
-    struct owl_packet *pkt;
 
     pkt = kmalloc(sizeof(struct owl_packet), GFP_KERNEL);
     if (!pkt) {
@@ -569,6 +568,7 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
     if (dest_np->ndev == dev)
         dest_np = list_first_entry(&owl->netintf_list,
                                    struct owl_ndev_priv_context, list);
+
     char prefix[16];
     snprintf(prefix, 16, "%s Tx ", dev->name);
     print_hex_dump(KERN_DEBUG, prefix, DUMP_PREFIX_OFFSET, 16, 1, pkt->data,
@@ -576,8 +576,10 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
     /* enqueue to destination */
     list_add_tail(&pkt->list, &dest_np->rx_queue);
     kfree_skb(skb);
-    /* Directly send to rx_queue, simulate the rx interrupt*/
+
+    /* Directly send to rx_queue, simulate the rx interrupt */
     owl_handle_rx(dest_np->ndev);
+
     return NETDEV_TX_OK;
 }
 
@@ -644,19 +646,17 @@ void owl_ndev_priv_setup_helper(struct owl_ndev_priv_context *ndev_data)
      * wireless_dev with net_device can be represented as inherited class of
      * single net_device.
      */
-
     ndev_data->wdev.wiphy = ndev_data->owl->wiphy;
     ndev_data->wdev.netdev = ndev_data->ndev;
     ndev_data->wdev.iftype = NL80211_IFTYPE_STATION;
     ndev_data->ndev->ieee80211_ptr = &ndev_data->wdev;
 
-    /* set network device hooks. should implement ndo_start_xmit() at least
-     */
-
+    /* set network device hooks. should implement ndo_start_xmit() at least */
     ndev_data->ndev->netdev_ops = &owl_ndev_ops;
 
-    /* Add here proper net_device initialization. */
+    /* Add here proper net_device initialization */
     ndev_data->ndev->features |= NETIF_F_HW_CSUM;
+
     /* Initialize rx_queue */
     INIT_LIST_HEAD(&ndev_data->rx_queue);
 }
@@ -727,7 +727,7 @@ static struct owl_context *owl_create_context(void)
         goto l_error_wiphy_register;
 
     INIT_LIST_HEAD(&ret->netintf_list);
-    for (int i = 0; i < NDEV_NUMS; i++) {
+    for (int i = 0; i < NR_NDEV; i++) {
         /* allocate network device context. */
         struct net_device *ndev = NULL;
         ndev = alloc_netdev(sizeof(struct owl_ndev_priv_context),
@@ -735,6 +735,7 @@ static struct owl_context *owl_create_context(void)
                             ether_setup);
         if (!ndev)
             goto l_error_alloc_ndev;
+
         /* fill private data of network context. */
         ndev_data = ndev_get_owl_context(ndev);
         ndev_data->owl = ret;
@@ -746,9 +747,9 @@ static struct owl_context *owl_create_context(void)
          * noop state DOWN group default link/ether 00:00:00:00:00:00 brd
          * ff:ff:ff:ff:ff:ff
          */
-
         if (register_netdev(ndev_data->ndev))
             goto l_error_ndev_register;
+
         list_add_tail(&ndev_data->list, &ret->netintf_list);
     }
 
@@ -774,14 +775,17 @@ static void owl_free(struct owl_context *ctx)
     struct owl_ndev_priv_context *item = NULL;
     if (!ctx)
         return;
+
     if (list_empty(&ctx->netintf_list)) {
         printk(KERN_NOTICE "owl netintf: No interfcae found in netintf_list\n");
         return;
     }
+
     list_for_each_entry (item, &ctx->netintf_list, list) {
         unregister_netdev(item->ndev);
         free_netdev(item->ndev);
     }
+
     wiphy_unregister(ctx->wiphy);
     wiphy_free(ctx->wiphy);
     kfree(ctx);
@@ -799,10 +803,13 @@ static int __init vwifi_init(void)
 
     INIT_WORK(&g_ctx->ws_connect, owl_connect_routine);
     g_ctx->connecting_ssid[0] = 0;
+
     INIT_WORK(&g_ctx->ws_disconnect, owl_disconnect_routine);
     g_ctx->disconnect_reason_code = 0;
+
     INIT_WORK(&g_ctx->ws_scan, owl_scan_routine);
     g_ctx->scan_request = NULL;
+
     INIT_WORK(&g_ctx->ws_scan_timeout, owl_scan_timeout_work);
     timer_setup(&g_ctx->scan_timeout, owl_scan_timeout, 0);
 
