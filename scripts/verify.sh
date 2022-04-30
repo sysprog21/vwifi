@@ -40,10 +40,37 @@ if [ $final_ret -eq 0 ]; then
     if [ "${diff#-}" -gt 500000 ]; then
         final_ret=4
     fi
+    # Ping test result
+    sudo ip link set owl0sink up
+    sudo ip netns add sta0
+    sudo ip netns add sink
+    # Create macvlan bridge mode interface.
+    # All stations are directly connected to each other with a simple bridge via the physical interfaces (owl0/owl0sink).
+    # After raw packet enter macvlan, it will follow normal kernel l2/l3 data path traffic process.
+    #  macvlan0 10.0.0.1/24 <---> owl0 <---> vwifi driver <---> owl0sink <---> macvlan1 10.0.0.2/24
+    sudo ip link add macvlan0 link owl0 type macvlan mode bridge
+    sudo ip link add macvlan1 link owl0sink type macvlan mode bridge
+
+    sudo ip link set macvlan0 netns sta0
+    sudo ip link set macvlan1 netns sink
+
+    sudo ip netns exec sta0 ip link set macvlan0 up
+    sudo ip netns exec sta0 ip addr add 10.0.0.1/24 dev macvlan0
+
+    sudo ip netns exec sink ip link set macvlan1 up
+    sudo ip netns exec sink ip addr add 10.0.0.2/24 dev macvlan1
+
+    sudo ip netns exec sta0 ping 10.0.0.2 -c 4
+    ping_rc=$?
+    if [ $ping_rc -ne 0 ]; then
+        final_ret=5
+    fi
 fi
 
 if [ $final_ret -eq 0 ]; then
     remove_kmod vwifi
+    sudo ip netns delete sta0
+    sudo ip netns delete sink
     rm scan_result.log scan_bssid.log connected.log
     echo "==== Test PASSED ===="
     exit 0
