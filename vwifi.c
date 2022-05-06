@@ -42,6 +42,9 @@ struct owl_context {
     struct work_struct ws_scan, ws_scan_timeout;
     struct timer_list scan_timeout;
     struct cfg80211_scan_request *scan_request;
+    bool associated;           /* whether the station is associated with an AP*/
+    unsigned long conn_time;   /* last connection time to a AP (in jiffies) */
+    unsigned long active_time; /* last tx/rx time (in jiffies) */
 
     /* List head for maintain multiple network device private context */
     struct list_head netintf_list;
@@ -94,6 +97,48 @@ static inline struct owl_ndev_priv_context *ndev_get_owl_context(
     struct net_device *ndev)
 {
     return (struct owl_ndev_priv_context *) netdev_priv(ndev);
+}
+
+#define SIN_S3_MIN (-(1 << 12))
+#define SIN_S3_MAX (1 << 12)
+/* A sine approximation via a third-order approx.
+ * https://www.coranac.com/2009/07/sines explain the
+ * details about the magic inside this function. I adjusted
+ * some parameter to make the frequency of the sine function
+ * larger.
+ * __sin_s3() is for internal use of rand_int_smooth(), never
+ * call this function elsewhere.
+ * @x: seed to generate third-order sine value
+ * @return: signed 32-bit integer ranging from SIN_S3_MIN ~ SIN_S3_MAX
+ */
+static inline s32 __sin_s3(s32 x)
+{
+    /* S(x) = (x * (3 * 2^p - (x * x)/2^r)) / 2^s
+     * @n: the angle scale
+     * @A: the amplitude
+     * @p: keep the multiplication from overflowing
+     */
+    const int32_t n = 6, A = 12, p = 10, r = 2 * n - p, s = n + p + 1 - A;
+
+    x = x << (30 - n);
+
+    if ((x ^ (x << 1)) < 0)
+        x = (1 << 31) - x;
+
+    x = x >> (30 - n);
+    return (x * ((3 << p) - ((x * x) >> r))) >> s;
+}
+
+/* Generate a signed 32-bit integer by feeding seed into
+ * __sin_s3(). It's closer to a sine function if you plot
+ * the distribution of (seed, rand_int_smmoth()).
+ */
+static inline s32 rand_int_smooth(s32 low, s32 up, s32 seed)
+{
+    s32 result = __sin_s3(seed) - SIN_S3_MIN;
+    result = (result * (up - low)) / (SIN_S3_MAX - SIN_S3_MIN);
+    result += low;
+    return result;
 }
 
 static s32 rand_int(s32 low, s32 up)
@@ -194,7 +239,7 @@ static void inform_dummy_bss(struct owl_context *owl)
             /* the only channel */
             .chan = &owl->wiphy->bands[NL80211_BAND_2GHZ]->channels[0],
             .scan_width = NL80211_BSS_CHAN_WIDTH_20,
-            .signal = rand_int(-100, -30) * 100,
+            .signal = rand_int_smooth(-100, -30, jiffies) * 100,
         };
 
         size_t ssid_len = strlen(ap->ssid);
@@ -341,6 +386,8 @@ static void owl_connect_routine(struct work_struct *w)
          */
         cfg80211_connect_result(item->ndev, NULL, NULL, 0, NULL, 0,
                                 WLAN_STATUS_SUCCESS, GFP_KERNEL);
+        owl->associated = true;
+        owl->conn_time = jiffies;
     }
     owl->connecting_ssid[0] = 0;
 
@@ -367,6 +414,7 @@ static void owl_disconnect_routine(struct work_struct *w)
     cfg80211_disconnected(item->ndev, owl->disconnect_reason_code, NULL, 0,
                           true, GFP_KERNEL);
     owl->disconnect_reason_code = 0;
+    owl->associated = false;
 
     mutex_unlock(&owl->lock);
 }
@@ -447,13 +495,48 @@ static int owl_disconnect(struct wiphy *wiphy,
     return 0;
 }
 
-/* Called when rtnl lock was acquired. */
+/* Callback called by kernel when user decided to get
+ * informations of a specific station. The informations
+ * include numbers and bytes of tx/rx, signal, and
+ * timing informations (inactive time and elapsed time since
+ * the last connection to an AP).
+ * Called when rtnl lock was acquired.
+ */
 static int owl_get_station(struct wiphy *wiphy,
                            struct net_device *dev,
                            const u8 *mac,
                            struct station_info *sinfo)
 {
-    /* TODO: Get station infomation */
+    struct owl_context *owl = ndev_get_owl_context(dev)->owl;
+    struct owl_ndev_priv_context *np = NULL;
+
+    /* Find the station which is being searched */
+    np = list_first_entry(&owl->netintf_list, struct owl_ndev_priv_context,
+                          list);
+    if (!ether_addr_equal(np->ndev->dev_addr, mac))
+        np = list_last_entry(&owl->netintf_list, struct owl_ndev_priv_context,
+                             list);
+
+    sinfo->filled = BIT_ULL(NL80211_STA_INFO_TX_PACKETS) |
+                    BIT_ULL(NL80211_STA_INFO_RX_PACKETS) |
+                    BIT_ULL(NL80211_STA_INFO_TX_FAILED) |
+                    BIT_ULL(NL80211_STA_INFO_TX_BYTES) |
+                    BIT_ULL(NL80211_STA_INFO_RX_BYTES) |
+                    BIT_ULL(NL80211_STA_INFO_SIGNAL) |
+                    BIT_ULL(NL80211_STA_INFO_INACTIVE_TIME);
+    if (owl->associated) {
+        sinfo->filled |= BIT_ULL(NL80211_STA_INFO_CONNECTED_TIME);
+        sinfo->connected_time =
+            jiffies_to_msecs(jiffies - owl->conn_time) / 1000;
+    }
+    sinfo->tx_packets = np->stats.tx_packets;
+    sinfo->rx_packets = np->stats.rx_packets;
+    sinfo->tx_failed = np->stats.tx_dropped;
+    sinfo->tx_bytes = np->stats.tx_bytes;
+    sinfo->rx_bytes = np->stats.rx_bytes;
+    /* For CFG80211_SIGNAL_TYPE_MBM, value is expressed in dbm */
+    sinfo->signal = rand_int_smooth(-100, -30, jiffies);
+    sinfo->inactive_time = jiffies_to_msecs(jiffies - owl->active_time);
     return 0;
 }
 
@@ -503,6 +586,7 @@ static struct net_device_stats *owl_ndo_get_stats(struct net_device *dev)
 /* Receive a packet: retrieve, encapsulate and pass over to upper levels */
 static void owl_handle_rx(struct net_device *dev)
 {
+    struct owl_context *owl = ndev_get_owl_context(dev)->owl;
     struct owl_ndev_priv_context *np = ndev_get_owl_context(dev);
     struct sk_buff *skb;
     char prefix[16];
@@ -534,6 +618,7 @@ static void owl_handle_rx(struct net_device *dev)
     netif_rx(skb);
     np->stats.rx_packets++;
     np->stats.rx_bytes += pkt->datalen;
+    owl->active_time = jiffies;
 
 pkt_free:
     list_del(&pkt->list);
@@ -555,6 +640,7 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
     /* Don't forget to cleanup skb, as its ownership moved to xmit callback. */
     np->stats.tx_packets++;
     np->stats.tx_bytes += skb->len;
+    owl->active_time = jiffies;
 
     pkt = kmalloc(sizeof(struct owl_packet), GFP_KERNEL);
     if (!pkt) {
@@ -718,6 +804,9 @@ static struct owl_context *owl_create_context(void)
     ret->wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
 
     ret->wiphy->flags |= WIPHY_FLAG_NETNS_OK;
+
+    ret->associated = false;
+    ret->active_time = jiffies;
 
     /* register wiphy, if everything ok - there should be another wireless
      * device in system. use command: $ iw list

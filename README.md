@@ -20,6 +20,13 @@ Since `vwifi` relies on the Linux wireless (IEEE-802.11) subsystem, [iw](https:/
 sudo apt install iw
 ```
 
+If you're going to run the test script(scripts/verify.sh), python3 and some packages
+are necessary:
+```shell
+sudo apt install python3 python3-pip
+pip3 install numpy matplotlib
+```
+
 ## Build and Run
 
 Run `make` to build the kernel module:
@@ -42,11 +49,12 @@ Check network interfaces:
 ip link
 ```
 
-There should be an entry starting with `owl0`, which is exactly the interface created by `vwifi`.
+There should be an entry starting with `owl0` and `owl0sink`, which is exactly the interface created by `vwifi`.
 
-Bring up the network interface:
+Bring up the two network interfaces:
 ```shell
 sudo ip link set owl0 up
+sudo ip link set owl0sink up
 ```
 
 Show available wireless interfaces:
@@ -57,10 +65,16 @@ sudo iw dev
 You should get something as following:
 ```
 phy#0
+	Interface owl0sink
+		ifindex 4
+		wdev 0x2
+		addr 00:6f:77:6c:30:73
+		type managed
+
 	Interface owl0
 		ifindex 3
 		wdev 0x1
-		addr 00:00:00:00:00:00
+		addr 00:6f:77:6c:30:00
 		type managed
 ```
 
@@ -86,6 +100,27 @@ Wiphy owl
 	Supported interface modes:
 		 * managed
 ```
+
+Get station informations of `owl0`:
+```shell
+sudo iw dev owl0 station get 00:6f:77:6c:30:00
+```
+
+You should get something as following:
+```
+Station 00:6f:77:6c:30:00 (on owl0)
+	inactive time:	141876 ms
+	rx bytes:	0
+	rx packets:	0
+	tx bytes:	0
+	tx packets:	0
+	tx failed:	0
+	signal:  	-52 dBm
+	current time:	1651766257568 ms
+
+```
+You can get informations of `owl0sink` by replacing `00:6f:77:6c:30:00` to
+`00:6f:77:6c:30:73`.
 
 Then, perform scanning:
 ```shell

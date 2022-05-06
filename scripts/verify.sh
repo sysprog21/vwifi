@@ -65,13 +65,29 @@ if [ $final_ret -eq 0 ]; then
     if [ $ping_rc -ne 0 ]; then
         final_ret=5
     fi
+
+    # plot the distribution of RSSI of owl0
+    echo -e "\n\n######## collecting RSSI information of owl0, please wait... ##########"
+    owl0_mac=$(sudo iw dev | grep -E 'owl0$' -A 3 | grep addr | awk '{print $2}')
+    counts=1000 # do get_station 1000 times
+
+    for i in $(seq 1 1 $counts); do
+        owl0_signal=$(sudo iw dev owl0 station get $owl0_mac | grep "signal" | awk '{print $2}')
+        echo $owl0_signal >> rssi.txt
+    done
+
+    python3 $ROOT/scripts/plot_rssi.py
+    plot_rc=$?
+    if [ $plot_rc -ne 0 ]; then
+        plot_rc=6
+    fi
 fi
 
 if [ $final_ret -eq 0 ]; then
     remove_kmod vwifi
     sudo ip netns delete sta0
     sudo ip netns delete sink
-    rm scan_result.log scan_bssid.log connected.log
+    rm scan_result.log scan_bssid.log connected.log rssi.txt
     echo "==== Test PASSED ===="
     exit 0
 fi
