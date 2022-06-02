@@ -1,3 +1,4 @@
+#include <linux/etherdevice.h>
 #include <linux/hashtable.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
@@ -12,13 +13,10 @@ MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
 MODULE_DESCRIPTION("virtual cfg80211 driver");
 
-#define WIPHY_NAME "owl" /* Our WireLess */
-#define NDEV_NAME WIPHY_NAME "%d"
-#define SINKDEV_NAME NDEV_NAME "sink"
-#define NR_NDEV 2
+#define NAME_PREFIX "owl"
+#define NDEV_NAME NAME_PREFIX "%d"
 
-/* According to 802.11 Standard, SSID has max len 32. */
-#define SSID_MAX_LENGTH 32
+#define MAX_PROBED_SSIDS 69
 
 #ifndef DEFAULT_SSID_LIST
 #define DEFAULT_SSID_LIST "[MyHomeWiFi]"
@@ -32,41 +30,50 @@ struct owl_packet {
     struct list_head list;
 };
 
+/* Context for the whole program, so there's only single owl_context
+ * no matter the number of virtual interfaces.
+ * Fileds in the structure are interface-independent.
+ */
 struct owl_context {
-    struct wiphy *wiphy;
+    /* We may not need this lock, cause vif_list would not change during
+     * the whole lifetime.
+     */
     struct mutex lock;
-    struct work_struct ws_connect, ws_disconnect;
-    char connecting_ssid[SSID_MAX_LENGTH + 1]; /* plus one for '\0' */
-    u8 connecting_bssid[ETH_ALEN];
-    u16 disconnect_reason_code;
-    struct work_struct ws_scan, ws_scan_timeout;
-    struct timer_list scan_timeout;
-    struct cfg80211_scan_request *scan_request;
-    bool associated;           /* whether the station is associated with an AP*/
-    unsigned long conn_time;   /* last connection time to a AP (in jiffies) */
-    unsigned long active_time; /* last tx/rx time (in jiffies) */
-
     /* List head for maintain multiple network device private context */
-    struct list_head netintf_list;
+    struct list_head vif_list;
 };
 
-struct owl_wiphy_priv_context {
-    struct owl_context *owl;
-};
+/* SME stands for "station management entity" */
+enum sme_state { SME_DISCONNECTED, SME_CONNECTING, SME_CONNECTED };
 
-/* Network Device Private Data Context */
-struct owl_ndev_priv_context {
-    struct owl_context *owl;
+/* Virtual interface which is pointed by netdev_priv(). Fields in the
+ * structure are interface-dependent.
+ */
+struct owl_vif {
     struct wireless_dev wdev;
     struct net_device *ndev;
     struct net_device_stats stats;
-    struct list_head rx_queue; /*< Head of received packet queue */
 
-    /* List entry for maintaining multiple net device private data in
-     * owl_context.netintf_list.
-     * In owl_create_context function, two net_device will be created:
-     * - owl0 is for wifi STATION.
-     * - owl0sink will be simulated as a mock for redirecting packet to kernel.
+    /* Currently connected BSS id */
+    u8 bssid[ETH_ALEN];
+    u8 ssid[IEEE80211_MAX_SSID_LEN];
+    /* For the case the STA is going to roam to another BSS */
+    u8 req_bssid[ETH_ALEN];
+    u8 req_ssid[IEEE80211_MAX_SSID_LEN];
+    struct cfg80211_scan_request *scan_request;
+    enum sme_state sme_state;  /* connection information */
+    unsigned long conn_time;   /* last connection time to a AP (in jiffies) */
+    unsigned long active_time; /* last tx/rx time (in jiffies) */
+    u16 disconnect_reason_code;
+
+    struct mutex lock;
+    struct timer_list scan_timeout;
+    struct work_struct ws_connect, ws_disconnect;
+    struct work_struct ws_scan, ws_scan_timeout;
+    struct list_head rx_queue; /* Head of received packet queue */
+
+    /* List entry for maintaining multiple private data of net_device in
+     * owl_context.vif_list.
      */
     struct list_head list;
 };
@@ -75,28 +82,33 @@ struct owl_ndev_priv_context {
 struct ap_info_entry_t {
     struct hlist_node node;
     u8 bssid[ETH_ALEN];
-    char ssid[SSID_MAX_LENGTH];
+    char ssid[IEEE80211_MAX_SSID_LEN];
 };
 
 static char *ssid_list = DEFAULT_SSID_LIST;
 module_param(ssid_list, charp, 0644);
 MODULE_PARM_DESC(ssid_list, "Self-defined SSIDs.");
 
+static int interfaces = 2;
+module_param(interfaces, int, 0444);
+MODULE_PARM_DESC(interfaces, "Number of virtual interfaces.");
+
 /* AP database */
 static DECLARE_HASHTABLE(ssid_table, 4);
 
-/* helper function to retrieve main context from "priv" data of the wiphy */
-static inline struct owl_wiphy_priv_context *wiphy_get_owl_context(
-    struct wiphy *wiphy)
+/* Global context */
+static struct owl_context *owl = NULL;
+
+/* helper function to retrieve vif from net_device */
+static inline struct owl_vif *ndev_get_owl_vif(struct net_device *ndev)
 {
-    return (struct owl_wiphy_priv_context *) wiphy_priv(wiphy);
+    return (struct owl_vif *) netdev_priv(ndev);
 }
 
-/* helper function to retrieve main context from "priv" data of network dev */
-static inline struct owl_ndev_priv_context *ndev_get_owl_context(
-    struct net_device *ndev)
+/* helper function to retrieve vif from wireless_dev */
+static inline struct owl_vif *wdev_get_owl_vif(struct wireless_dev *wdev)
 {
-    return (struct owl_ndev_priv_context *) netdev_priv(ndev);
+    return container_of(wdev, struct owl_vif, wdev);
 }
 
 #define SIN_S3_MIN (-(1 << 12))
@@ -141,15 +153,6 @@ static inline s32 rand_int_smooth(s32 low, s32 up, s32 seed)
     return result;
 }
 
-static s32 rand_int(s32 low, s32 up)
-{
-    s32 result = (s32) get_random_u32();
-    result %= (up - low + 1);
-    result = abs(result);
-    result += low;
-    return result;
-}
-
 /* Murmur hash.
  * See https://stackoverflow.com/a/57960443
  */
@@ -181,7 +184,7 @@ static void update_ssids(const char *ssid_list)
 
     for (char *s = (char *) ssid_list; *s != 0; /*empty*/) {
         bool ssid_exist = false;
-        char token[SSID_MAX_LENGTH] = {0};
+        char token[IEEE80211_MAX_SSID_LEN] = {0};
 
         /* Get the number of token separator characters. */
         size_t n = strspn(s, delims);
@@ -223,7 +226,7 @@ static void update_ssids(const char *ssid_list)
  * and "inform" the kernel about "new" BSS Most of the code are copied from the
  * upcoming inform_dummy_bss function.
  */
-static void inform_dummy_bss(struct owl_context *owl)
+static void inform_dummy_bss(struct owl_vif *vif)
 {
     struct ap_info_entry_t *ap;
     int i;
@@ -237,7 +240,7 @@ static void inform_dummy_bss(struct owl_context *owl)
         struct cfg80211_bss *bss = NULL;
         struct cfg80211_inform_bss data = {
             /* the only channel */
-            .chan = &owl->wiphy->bands[NL80211_BAND_2GHZ]->channels[0],
+            .chan = &vif->wdev.wiphy->bands[NL80211_BAND_2GHZ]->channels[0],
             .scan_width = NL80211_BSS_CHAN_WIDTH_20,
             .signal = rand_int_smooth(-100, -30, jiffies) * 100,
         };
@@ -257,24 +260,190 @@ static void inform_dummy_bss(struct owl_context *owl)
 
         /* It is posible to use cfg80211_inform_bss() instead. */
         bss = cfg80211_inform_bss_data(
-            owl->wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, ap->bssid, tsf,
+            vif->wdev.wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, ap->bssid, tsf,
             WLAN_CAPABILITY_ESS, 100, ie, ssid_len + 2, GFP_KERNEL);
 
         /* cfg80211_inform_bss_data() returns cfg80211_bss structure referefence
          * counter of which should be decremented if it is unused.
          */
-        cfg80211_put_bss(owl->wiphy, bss);
+        cfg80211_put_bss(vif->wdev.wiphy, bss);
         kfree(ie);
     }
 }
+
+static int owl_ndo_open(struct net_device *dev)
+{
+    netif_start_queue(dev);
+    return 0;
+}
+
+static int owl_ndo_stop(struct net_device *dev)
+{
+    struct owl_vif *vif = ndev_get_owl_vif(dev);
+    struct owl_packet *pkt, *is = NULL;
+    list_for_each_entry_safe (pkt, is, &vif->rx_queue, list) {
+        list_del(&pkt->list);
+        kfree(pkt);
+    }
+    netif_stop_queue(dev);
+    return 0;
+}
+
+static struct net_device_stats *owl_ndo_get_stats(struct net_device *dev)
+{
+    struct owl_vif *vif = ndev_get_owl_vif(dev);
+    return &vif->stats;
+}
+
+/* Receive a packet: retrieve, encapsulate and pass over to upper levels */
+static void owl_rx(struct net_device *dev)
+{
+    struct owl_vif *vif = ndev_get_owl_vif(dev);
+    struct sk_buff *skb;
+    char prefix[16];
+    struct owl_packet *pkt;
+
+    if (list_empty(&vif->rx_queue)) {
+        printk(KERN_NOTICE "owl rx: No packet in rx_queue\n");
+        return;
+    }
+
+    if (mutex_lock_interruptible(&vif->lock))
+        goto pkt_free;
+
+    pkt = list_first_entry(&vif->rx_queue, struct owl_packet, list);
+    mutex_unlock(&vif->lock);
+
+    vif->stats.rx_packets++;
+    vif->stats.rx_bytes += pkt->datalen;
+    vif->active_time = jiffies;
+
+    snprintf(prefix, 16, "%s Rx ", dev->name);
+    print_hex_dump(KERN_DEBUG, prefix, DUMP_PREFIX_OFFSET, 16, 1, pkt->data,
+                   pkt->datalen, false);
+    /* Put raw packet into socket buffer */
+    skb = dev_alloc_skb(pkt->datalen + 2);
+    if (!skb) {
+        printk(KERN_NOTICE "owl rx: low on mem - packet dropped\n");
+        vif->stats.rx_dropped++;
+        goto pkt_free;
+    }
+    skb_reserve(skb, 2); /* align IP on 16B boundary */
+    memcpy(skb_put(skb, pkt->datalen), pkt->data, pkt->datalen);
+
+    /* Write metadata, and then pass to the receive level */
+    skb->dev = dev;
+    skb->protocol = eth_type_trans(skb, dev);
+    skb->ip_summed = CHECKSUM_UNNECESSARY; /* don't check it */
+    netif_rx(skb);
+
+pkt_free:
+    list_del(&pkt->list);
+    kfree(pkt);
+}
+
+static int __owl_ndo_start_xmit(struct owl_vif *vif,
+                                struct owl_vif *dest_vif,
+                                struct sk_buff *skb)
+{
+    struct owl_packet *pkt = NULL;
+
+    pkt = kmalloc(sizeof(struct owl_packet), GFP_KERNEL);
+    if (!pkt) {
+        printk(KERN_NOTICE "Ran out of memory allocating packet pool\n");
+        return NETDEV_TX_OK;
+    }
+    memcpy(pkt->data, skb->data, skb->len);
+    pkt->datalen = skb->len;
+
+    char prefix[16];
+    snprintf(prefix, 16, "%s Tx ", vif->ndev->name);
+    print_hex_dump(KERN_DEBUG, prefix, DUMP_PREFIX_OFFSET, 16, 1, pkt->data,
+                   pkt->datalen, false);
+
+    /* enqueue packet to destination vif's rx_queue */
+    if (mutex_lock_interruptible(&dest_vif->lock))
+        goto l_error_mutex_lock;
+    list_add_tail(&pkt->list, &dest_vif->rx_queue);
+    mutex_unlock(&dest_vif->lock);
+
+    /* Update interface statistics */
+    vif->stats.tx_packets++;
+    vif->stats.tx_bytes += pkt->datalen;
+    vif->active_time = jiffies;
+
+    /* Directly send to rx_queue, simulate the rx interrupt */
+    owl_rx(dest_vif->ndev);
+
+    return 0;
+
+l_error_mutex_lock:
+    kfree(pkt);
+    vif->stats.tx_dropped++;
+    return -1;
+}
+
+/* Network packet transmit.
+ * Callback called by the kernel when packet of data should be sent.
+ * In this example it does nothing.
+ */
+static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
+                                      struct net_device *dev)
+{
+    printk(KERN_INFO "owl: ndo_start_xmit\n");
+
+    struct owl_vif *vif = ndev_get_owl_vif(dev);
+    struct owl_vif *dest_vif = NULL;
+    struct ethhdr *eth_hdr = NULL;
+    int count = 0;
+
+    eth_hdr = (struct ethhdr *) skb->data;
+    /* Check if the packet is broadcasting */
+    if (is_broadcast_ether_addr(eth_hdr->h_dest)) {
+        list_for_each_entry (dest_vif, &owl->vif_list, list) {
+            if (dest_vif == vif)
+                continue;
+            __owl_ndo_start_xmit(vif, dest_vif, skb);
+            count++;
+        }
+    }
+    /* The packet is unicasting */
+    else {
+        list_for_each_entry (dest_vif, &owl->vif_list, list) {
+            if (ether_addr_equal(eth_hdr->h_dest, dest_vif->ndev->dev_addr)) {
+                __owl_ndo_start_xmit(vif, dest_vif, skb);
+                count++;
+                break;
+            }
+        }
+    }
+
+    if (!count)
+        vif->stats.tx_dropped++;
+
+    /* Don't forget to cleanup skb, as its ownership moved to xmit callback. */
+    kfree_skb(skb);
+
+    return NETDEV_TX_OK;
+}
+
+/* Structure of functions for network devices.
+ * It should have at least ndo_start_xmit functions called for packet to be
+ * sent.
+ */
+static struct net_device_ops owl_ndev_ops = {
+    .ndo_open = owl_ndo_open,
+    .ndo_stop = owl_ndo_stop,
+    .ndo_start_xmit = owl_ndo_start_xmit,
+    .ndo_get_stats = owl_ndo_get_stats,
+};
 
 /* Inform the "dummy" BSS to kernel and call cfg80211_scan_done() to finish
  * scan.
  */
 static void owl_scan_timeout_work(struct work_struct *w)
 {
-    struct owl_context *owl =
-        container_of(w, struct owl_context, ws_scan_timeout);
+    struct owl_vif *vif = container_of(w, struct owl_vif, ws_scan_timeout);
     struct cfg80211_scan_info info = {
         /* if scan was aborted by user (calling cfg80211_ops->abort_scan) or by
          * any driver/hardware issue - field should be set to "true"
@@ -283,17 +452,17 @@ static void owl_scan_timeout_work(struct work_struct *w)
     };
 
     /* inform with dummy BSS */
-    inform_dummy_bss(owl);
+    inform_dummy_bss(vif);
 
-    if (mutex_lock_interruptible(&owl->lock))
+    if (mutex_lock_interruptible(&vif->lock))
         return;
 
     /* finish scan */
-    cfg80211_scan_done(owl->scan_request, &info);
+    cfg80211_scan_done(vif->scan_request, &info);
 
-    owl->scan_request = NULL;
+    vif->scan_request = NULL;
 
-    mutex_unlock(&owl->lock);
+    mutex_unlock(&vif->lock);
 }
 
 /* Callback called when the scan timer timeouts. This function just schedules
@@ -302,10 +471,10 @@ static void owl_scan_timeout_work(struct work_struct *w)
  */
 static void owl_scan_timeout(struct timer_list *t)
 {
-    struct owl_context *owl = container_of(t, struct owl_context, scan_timeout);
+    struct owl_vif *vif = container_of(t, struct owl_vif, scan_timeout);
 
-    if (owl->scan_request)
-        schedule_work(&owl->ws_scan_timeout);
+    if (vif->scan_request)
+        schedule_work(&vif->ws_scan_timeout);
 }
 
 /* "Scan routine". It simulates a fake BSS scan (In fact, do nothing.), and sets
@@ -316,14 +485,14 @@ static void owl_scan_timeout(struct timer_list *t)
  */
 static void owl_scan_routine(struct work_struct *w)
 {
-    struct owl_context *owl = container_of(w, struct owl_context, ws_scan);
+    struct owl_vif *vif = container_of(w, struct owl_vif, ws_scan);
 
     /* In real world driver, we scan BSS here. But viwifi doesn't, because we
      * already store dummy BSS in ssid hash table. So we just set a scan timeout
      * after specific jiffies, and inform "dummy" BSS to kernel and call
      * cfg80211_scan_done() by timeout worker.
      */
-    mod_timer(&owl->scan_timeout, jiffies + msecs_to_jiffies(SCAN_TIMEOUT_MS));
+    mod_timer(&vif->scan_timeout, jiffies + msecs_to_jiffies(SCAN_TIMEOUT_MS));
 }
 
 /* It checks SSID of the ESS to connect and informs the kernel that connection
@@ -366,32 +535,30 @@ static void get_connecting_bssid(const char *connecting_ssid,
 
 static void owl_connect_routine(struct work_struct *w)
 {
-    struct owl_context *owl = container_of(w, struct owl_context, ws_connect);
-    struct owl_ndev_priv_context *item = NULL;
+    struct owl_vif *vif = container_of(w, struct owl_vif, ws_connect);
 
-    if (mutex_lock_interruptible(&owl->lock))
+    if (mutex_lock_interruptible(&vif->lock))
         return;
 
-    if (!is_valid_ssid(owl->connecting_ssid)) {
-        item = list_first_entry(&owl->netintf_list,
-                                struct owl_ndev_priv_context, list);
-        cfg80211_connect_timeout(item->ndev, NULL, NULL, 0, GFP_KERNEL,
+    if (!is_valid_ssid(vif->req_ssid)) {
+        cfg80211_connect_timeout(vif->ndev, NULL, NULL, 0, GFP_KERNEL,
                                  NL80211_TIMEOUT_SCAN);
+        vif->sme_state = SME_DISCONNECTED;
     } else {
-        /* First network device always is owl0 station */
-        item = list_first_entry(&owl->netintf_list,
-                                struct owl_ndev_priv_context, list);
         /* It is possible to use cfg80211_connect_result() or
          * cfg80211_connect_done()
          */
-        cfg80211_connect_result(item->ndev, NULL, NULL, 0, NULL, 0,
+        cfg80211_connect_result(vif->ndev, NULL, NULL, 0, NULL, 0,
                                 WLAN_STATUS_SUCCESS, GFP_KERNEL);
-        owl->associated = true;
-        owl->conn_time = jiffies;
+        memcpy(vif->ssid, vif->req_ssid, IEEE80211_MAX_SSID_LEN);
+        memcpy(vif->bssid, vif->req_bssid, ETH_ALEN);
+        vif->sme_state = SME_CONNECTED;
+        vif->conn_time = jiffies;
     }
-    owl->connecting_ssid[0] = 0;
 
-    mutex_unlock(&owl->lock);
+    memset(vif->req_ssid, 0, IEEE80211_MAX_SSID_LEN);
+    memset(vif->req_bssid, 0, ETH_ALEN);
+    mutex_unlock(&vif->lock);
 }
 
 /* Invoke cfg80211_disconnected() that informs the kernel that disconnect is
@@ -402,21 +569,17 @@ static void owl_connect_routine(struct work_struct *w)
  */
 static void owl_disconnect_routine(struct work_struct *w)
 {
-    struct owl_context *owl =
-        container_of(w, struct owl_context, ws_disconnect);
-    struct owl_ndev_priv_context *item = NULL;
+    struct owl_vif *vif = container_of(w, struct owl_vif, ws_disconnect);
 
-    if (mutex_lock_interruptible(&owl->lock))
+    if (mutex_lock_interruptible(&vif->lock))
         return;
 
-    item = list_first_entry(&owl->netintf_list, struct owl_ndev_priv_context,
-                            list);
-    cfg80211_disconnected(item->ndev, owl->disconnect_reason_code, NULL, 0,
-                          true, GFP_KERNEL);
-    owl->disconnect_reason_code = 0;
-    owl->associated = false;
+    cfg80211_disconnected(vif->ndev, vif->disconnect_reason_code, NULL, 0, true,
+                          GFP_KERNEL);
+    vif->disconnect_reason_code = 0;
+    vif->sme_state = SME_DISCONNECTED;
 
-    mutex_unlock(&owl->lock);
+    mutex_unlock(&vif->lock);
 }
 
 /* callback called by the kernel when user decided to scan.
@@ -425,20 +588,24 @@ static void owl_disconnect_routine(struct work_struct *w)
  */
 static int owl_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
 {
-    struct owl_context *owl = wiphy_get_owl_context(wiphy)->owl;
+    struct owl_vif *vif = wdev_get_owl_vif(request->wdev);
 
-    if (mutex_lock_interruptible(&owl->lock))
+    printk(KERN_INFO "owl: owl_scan\n");
+    for (int i = 0; i < request->n_ssids; i++)
+        printk("owl: request ssid[%d] = %s\n", i, request->ssids[i].ssid);
+
+    if (mutex_lock_interruptible(&vif->lock))
         return -ERESTARTSYS;
 
-    if (owl->scan_request) {
-        mutex_unlock(&owl->lock);
+    if (vif->scan_request) {
+        mutex_unlock(&vif->lock);
         return -EBUSY;
     }
-    owl->scan_request = request;
+    vif->scan_request = request;
 
-    mutex_unlock(&owl->lock);
+    mutex_unlock(&vif->lock);
 
-    if (!schedule_work(&owl->ws_scan))
+    if (!schedule_work(&vif->ws_scan))
         return -EBUSY;
     return 0;
 }
@@ -453,19 +620,19 @@ static int owl_connect(struct wiphy *wiphy,
                        struct net_device *dev,
                        struct cfg80211_connect_params *sme)
 {
-    struct owl_context *owl = wiphy_get_owl_context(wiphy)->owl;
-    size_t ssid_len =
-        sme->ssid_len > SSID_MAX_LENGTH ? SSID_MAX_LENGTH : sme->ssid_len;
+    struct owl_vif *vif = ndev_get_owl_vif(dev);
 
-    if (mutex_lock_interruptible(&owl->lock))
+    printk(KERN_INFO "owl: owl_connect\n");
+
+    if (mutex_lock_interruptible(&vif->lock))
         return -ERESTARTSYS;
 
-    memcpy(owl->connecting_ssid, sme->ssid, ssid_len);
-    owl->connecting_ssid[ssid_len] = 0;
-    get_connecting_bssid(owl->connecting_ssid, owl->connecting_bssid);
-    mutex_unlock(&owl->lock);
+    vif->sme_state = SME_CONNECTING;
+    memcpy(vif->req_ssid, sme->ssid, IEEE80211_MAX_SSID_LEN);
+    get_connecting_bssid(vif->req_ssid, vif->req_bssid);
+    mutex_unlock(&vif->lock);
 
-    if (!schedule_work(&owl->ws_connect))
+    if (!schedule_work(&vif->ws_connect))
         return -EBUSY;
     return 0;
 }
@@ -480,16 +647,16 @@ static int owl_disconnect(struct wiphy *wiphy,
                           struct net_device *dev,
                           u16 reason_code)
 {
-    struct owl_context *owl = wiphy_get_owl_context(wiphy)->owl;
+    struct owl_vif *vif = ndev_get_owl_vif(dev);
 
-    if (mutex_lock_interruptible(&owl->lock))
+    if (mutex_lock_interruptible(&vif->lock))
         return -ERESTARTSYS;
 
-    owl->disconnect_reason_code = reason_code;
+    vif->disconnect_reason_code = reason_code;
 
-    mutex_unlock(&owl->lock);
+    mutex_unlock(&vif->lock);
 
-    if (!schedule_work(&owl->ws_disconnect))
+    if (!schedule_work(&vif->ws_disconnect))
         return -EBUSY;
 
     return 0;
@@ -507,36 +674,175 @@ static int owl_get_station(struct wiphy *wiphy,
                            const u8 *mac,
                            struct station_info *sinfo)
 {
-    struct owl_context *owl = ndev_get_owl_context(dev)->owl;
-    struct owl_ndev_priv_context *np = NULL;
+    struct owl_vif *vif = NULL;
 
     /* Find the station which is being searched */
-    np = list_first_entry(&owl->netintf_list, struct owl_ndev_priv_context,
-                          list);
-    if (!ether_addr_equal(np->ndev->dev_addr, mac))
-        np = list_last_entry(&owl->netintf_list, struct owl_ndev_priv_context,
-                             list);
+    list_for_each_entry (vif, &owl->vif_list, list) {
+        if (ether_addr_equal(vif->ndev->dev_addr, mac)) {
+            sinfo->filled = BIT_ULL(NL80211_STA_INFO_TX_PACKETS) |
+                            BIT_ULL(NL80211_STA_INFO_RX_PACKETS) |
+                            BIT_ULL(NL80211_STA_INFO_TX_FAILED) |
+                            BIT_ULL(NL80211_STA_INFO_TX_BYTES) |
+                            BIT_ULL(NL80211_STA_INFO_RX_BYTES) |
+                            BIT_ULL(NL80211_STA_INFO_SIGNAL) |
+                            BIT_ULL(NL80211_STA_INFO_INACTIVE_TIME);
 
-    sinfo->filled = BIT_ULL(NL80211_STA_INFO_TX_PACKETS) |
-                    BIT_ULL(NL80211_STA_INFO_RX_PACKETS) |
-                    BIT_ULL(NL80211_STA_INFO_TX_FAILED) |
-                    BIT_ULL(NL80211_STA_INFO_TX_BYTES) |
-                    BIT_ULL(NL80211_STA_INFO_RX_BYTES) |
-                    BIT_ULL(NL80211_STA_INFO_SIGNAL) |
-                    BIT_ULL(NL80211_STA_INFO_INACTIVE_TIME);
-    if (owl->associated) {
-        sinfo->filled |= BIT_ULL(NL80211_STA_INFO_CONNECTED_TIME);
-        sinfo->connected_time =
-            jiffies_to_msecs(jiffies - owl->conn_time) / 1000;
+            if (vif->sme_state == SME_CONNECTED) {
+                sinfo->filled |= BIT_ULL(NL80211_STA_INFO_CONNECTED_TIME);
+                sinfo->connected_time =
+                    jiffies_to_msecs(jiffies - vif->conn_time) / 1000;
+            }
+
+            sinfo->tx_packets = vif->stats.tx_packets;
+            sinfo->rx_packets = vif->stats.rx_packets;
+            sinfo->tx_failed = vif->stats.tx_dropped;
+            sinfo->tx_bytes = vif->stats.tx_bytes;
+            sinfo->rx_bytes = vif->stats.rx_bytes;
+            /* For CFG80211_SIGNAL_TYPE_MBM, value is expressed in dbm */
+            sinfo->signal = rand_int_smooth(-100, -30, jiffies);
+            sinfo->inactive_time = jiffies_to_msecs(jiffies - vif->active_time);
+
+            return 0;
+        }
     }
-    sinfo->tx_packets = np->stats.tx_packets;
-    sinfo->rx_packets = np->stats.rx_packets;
-    sinfo->tx_failed = np->stats.tx_dropped;
-    sinfo->tx_bytes = np->stats.tx_bytes;
-    sinfo->rx_bytes = np->stats.rx_bytes;
-    /* For CFG80211_SIGNAL_TYPE_MBM, value is expressed in dbm */
-    sinfo->signal = rand_int_smooth(-100, -30, jiffies);
-    sinfo->inactive_time = jiffies_to_msecs(jiffies - owl->active_time);
+    return -ENOENT;
+}
+
+/* Create a virtual interface, which owns a wiphy which is not shared
+ * with other interfaces. Interface mode is set to STA mode, who wants
+ * to change the interface type should call change_virtual_intf().
+ */
+static struct wireless_dev *owl_interface_add(struct wiphy *wiphy, int if_idx)
+{
+    struct net_device *ndev = NULL;
+    struct owl_vif *vif = NULL;
+
+    /* allocate network device context. */
+    ndev = alloc_netdev(sizeof(struct owl_vif), NDEV_NAME, NET_NAME_ENUM,
+                        ether_setup);
+
+    if (!ndev)
+        goto l_error_alloc_ndev;
+
+    /* fill private data of network context. */
+    vif = ndev_get_owl_vif(ndev);
+    vif->ndev = ndev;
+
+    /* fill wireless_dev context.
+     * wireless_dev with net_device can be represented as inherited class of
+     * single net_device.
+     */
+    vif->wdev.wiphy = wiphy;
+    vif->wdev.netdev = ndev;
+    vif->wdev.iftype = NL80211_IFTYPE_STATION;
+    vif->ndev->ieee80211_ptr = &vif->wdev;
+
+    /* set network device hooks. should implement ndo_start_xmit() at least */
+    vif->ndev->netdev_ops = &owl_ndev_ops;
+
+    /* Add here proper net_device initialization */
+    vif->ndev->features |= NETIF_F_HW_CSUM;
+
+    /* The first byte is '\0' to avoid being a multicast
+     * address (the first byte of multicast addrs is odd).
+     */
+    char intf_name[ETH_ALEN] = {0};
+    snprintf(intf_name + 1, ETH_ALEN, "%s%d", NAME_PREFIX, if_idx);
+    memcpy(vif->ndev->dev_addr, intf_name, ETH_ALEN);
+
+    /* register network device. If everything is ok, there should be new
+     * network device: $ ip a owl0: <BROADCAST,MULTICAST> mtu 1500 qdisc
+     * noop state DOWN group default link/ether 00:00:00:00:00:00 brd
+     * ff:ff:ff:ff:ff:ff
+     */
+    if (register_netdev(vif->ndev))
+        goto l_error_ndev_register;
+
+    /* Initialize connection information */
+    memset(vif->bssid, 0, ETH_ALEN);
+    memset(vif->ssid, 0, IEEE80211_MAX_SSID_LEN);
+    memset(vif->req_bssid, 0, ETH_ALEN);
+    memset(vif->req_ssid, 0, IEEE80211_MAX_SSID_LEN);
+    vif->scan_request = NULL;
+    vif->sme_state = SME_DISCONNECTED;
+    vif->conn_time = 0;
+    vif->active_time = 0;
+    vif->disconnect_reason_code = 0;
+
+    mutex_init(&vif->lock);
+
+    /* Initialize timer of scan_timeout */
+    timer_setup(&vif->scan_timeout, owl_scan_timeout, 0);
+
+    INIT_WORK(&vif->ws_connect, owl_connect_routine);
+    INIT_WORK(&vif->ws_disconnect, owl_disconnect_routine);
+    INIT_WORK(&vif->ws_scan, owl_scan_routine);
+    INIT_WORK(&vif->ws_scan_timeout, owl_scan_timeout_work);
+
+    /* Initialize rx_queue */
+    INIT_LIST_HEAD(&vif->rx_queue);
+
+    /* Add vif into global vif_list */
+    if (mutex_lock_interruptible(&owl->lock))
+        goto l_error_add_list;
+    list_add_tail(&vif->list, &owl->vif_list);
+    mutex_unlock(&owl->lock);
+
+    return &vif->wdev;
+
+l_error_add_list:
+    unregister_netdev(vif->ndev);
+l_error_ndev_register:
+    free_netdev(vif->ndev);
+l_error_alloc_ndev:
+    wiphy_unregister(wiphy);
+    wiphy_free(wiphy);
+    return NULL;
+}
+
+/* Unregister and free a virtual interface identified by @vif->ndev. */
+static int owl_delete_interface(struct owl_vif *vif)
+{
+    struct owl_packet *pkt = NULL, *safe = NULL;
+    struct wiphy *wiphy = vif->ndev->ieee80211_ptr->wiphy;
+
+    if (mutex_lock_interruptible(&owl->lock))
+        return -ERESTARTSYS;
+
+    list_del(&vif->list);
+    mutex_unlock(&owl->lock);
+
+    /* Stop TX queue, and delete the pending packets */
+    netif_stop_queue(vif->ndev);
+    list_for_each_entry_safe (pkt, safe, &vif->rx_queue, list) {
+        list_del(&pkt->list);
+        kfree(pkt);
+    }
+    /* If there's is a pending scan, call cfg80211_scan_done to finish it. */
+    if (vif->scan_request) {
+        struct cfg80211_scan_info info = {
+            .aborted = true,
+        };
+
+        cfg80211_scan_done(vif->scan_request, &info);
+        vif->scan_request = NULL;
+    }
+
+    /* Make sure that no work is queued */
+    del_timer_sync(&vif->scan_timeout);
+    cancel_work_sync(&vif->ws_connect);
+    cancel_work_sync(&vif->ws_disconnect);
+    cancel_work_sync(&vif->ws_scan);
+    cancel_work_sync(&vif->ws_scan_timeout);
+
+    /* Deallocate net_device */
+    unregister_netdev(vif->ndev);
+    free_netdev(vif->ndev);
+
+    /* Deallocate wiphy device */
+    wiphy_unregister(wiphy);
+    wiphy_free(wiphy);
+
     return 0;
 }
 
@@ -551,133 +857,6 @@ static struct cfg80211_ops owl_cfg_ops = {
     .connect = owl_connect,
     .disconnect = owl_disconnect,
     .get_station = owl_get_station,
-};
-
-static int owl_ndo_open(struct net_device *dev)
-{
-    /* The first byte is '\0' to avoid being a multicast
-     * address (the first byte of multicast addrs is odd).
-     */
-    char intf_name[ETH_ALEN + 1] = {0};
-    snprintf(&intf_name[1], ETH_ALEN, "%s", dev->name);
-    memcpy(dev->dev_addr, intf_name, ETH_ALEN);
-    netif_start_queue(dev);
-    return 0;
-}
-
-static int owl_ndo_stop(struct net_device *dev)
-{
-    struct owl_ndev_priv_context *np = ndev_get_owl_context(dev);
-    struct owl_packet *pkt, *is = NULL;
-    list_for_each_entry_safe (pkt, is, &np->rx_queue, list) {
-        list_del(&pkt->list);
-        kfree(pkt);
-    }
-    netif_stop_queue(dev);
-    return 0;
-}
-
-static struct net_device_stats *owl_ndo_get_stats(struct net_device *dev)
-{
-    struct owl_ndev_priv_context *np = ndev_get_owl_context(dev);
-    return &np->stats;
-}
-
-/* Receive a packet: retrieve, encapsulate and pass over to upper levels */
-static void owl_handle_rx(struct net_device *dev)
-{
-    struct owl_context *owl = ndev_get_owl_context(dev)->owl;
-    struct owl_ndev_priv_context *np = ndev_get_owl_context(dev);
-    struct sk_buff *skb;
-    char prefix[16];
-    struct owl_packet *pkt;
-
-    if (list_empty(&np->rx_queue)) {
-        printk(KERN_NOTICE "owl rx: No packet in rx_queue\n");
-        return;
-    }
-
-    pkt = list_first_entry(&np->rx_queue, struct owl_packet, list);
-    snprintf(prefix, 16, "%s Rx ", dev->name);
-    print_hex_dump(KERN_DEBUG, prefix, DUMP_PREFIX_OFFSET, 16, 1, pkt->data,
-                   pkt->datalen, false);
-    /* Put raw packet into socket buffer */
-    skb = dev_alloc_skb(pkt->datalen + 2);
-    if (!skb) {
-        printk(KERN_NOTICE "owl rx: low on mem - packet dropped\n");
-        np->stats.rx_dropped++;
-        goto pkt_free;
-    }
-    skb_reserve(skb, 2); /* align IP on 16B boundary */
-    memcpy(skb_put(skb, pkt->datalen), pkt->data, pkt->datalen);
-
-    /* Write metadata, and then pass to the receive level */
-    skb->dev = dev;
-    skb->protocol = eth_type_trans(skb, dev);
-    skb->ip_summed = CHECKSUM_UNNECESSARY; /* don't check it */
-    netif_rx(skb);
-    np->stats.rx_packets++;
-    np->stats.rx_bytes += pkt->datalen;
-    owl->active_time = jiffies;
-
-pkt_free:
-    list_del(&pkt->list);
-    kfree(pkt);
-}
-
-/* Network packet transmit.
- * Callback called by the kernel when packet of data should be sent.
- * In this example it does nothing.
- */
-static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
-                                      struct net_device *dev)
-{
-    struct owl_ndev_priv_context *np = ndev_get_owl_context(dev);
-    struct owl_context *owl = ndev_get_owl_context(dev)->owl;
-    struct owl_ndev_priv_context *dest_np = NULL;
-    struct owl_packet *pkt;
-
-    /* Don't forget to cleanup skb, as its ownership moved to xmit callback. */
-    np->stats.tx_packets++;
-    np->stats.tx_bytes += skb->len;
-    owl->active_time = jiffies;
-
-    pkt = kmalloc(sizeof(struct owl_packet), GFP_KERNEL);
-    if (!pkt) {
-        printk(KERN_NOTICE "Ran out of memory allocating packet pool\n");
-        return NETDEV_TX_OK;
-    }
-    memcpy(&pkt->data, skb->data, skb->len);
-    pkt->datalen = skb->len;
-    dest_np =
-        list_last_entry(&owl->netintf_list, struct owl_ndev_priv_context, list);
-    if (dest_np->ndev == dev)
-        dest_np = list_first_entry(&owl->netintf_list,
-                                   struct owl_ndev_priv_context, list);
-
-    char prefix[16];
-    snprintf(prefix, 16, "%s Tx ", dev->name);
-    print_hex_dump(KERN_DEBUG, prefix, DUMP_PREFIX_OFFSET, 16, 1, pkt->data,
-                   pkt->datalen, false);
-    /* enqueue to destination */
-    list_add_tail(&pkt->list, &dest_np->rx_queue);
-    kfree_skb(skb);
-
-    /* Directly send to rx_queue, simulate the rx interrupt */
-    owl_handle_rx(dest_np->ndev);
-
-    return NETDEV_TX_OK;
-}
-
-/* Structure of functions for network devices.
- * It should have at least ndo_start_xmit functions called for packet to be
- * sent.
- */
-static struct net_device_ops owl_ndev_ops = {
-    .ndo_open = owl_ndo_open,
-    .ndo_stop = owl_ndo_stop,
-    .ndo_start_xmit = owl_ndo_start_xmit,
-    .ndo_get_stats = owl_ndo_get_stats,
 };
 
 /* Array of "supported" channels in 2GHz band. It is required for wiphy.
@@ -726,55 +905,36 @@ static struct ieee80211_supported_band nf_band_2ghz = {
     .n_bitrates = ARRAY_SIZE(owl_supported_rates_2ghz),
 };
 
-void owl_ndev_priv_setup_helper(struct owl_ndev_priv_context *ndev_data)
+/* Unregister and free virtual interfaces and wiphy. */
+static void owl_free(void)
 {
-    /* fill wireless_dev context.
-     * wireless_dev with net_device can be represented as inherited class of
-     * single net_device.
-     */
-    ndev_data->wdev.wiphy = ndev_data->owl->wiphy;
-    ndev_data->wdev.netdev = ndev_data->ndev;
-    ndev_data->wdev.iftype = NL80211_IFTYPE_STATION;
-    ndev_data->ndev->ieee80211_ptr = &ndev_data->wdev;
+    struct owl_vif *vif = NULL, *safe = NULL;
 
-    /* set network device hooks. should implement ndo_start_xmit() at least */
-    ndev_data->ndev->netdev_ops = &owl_ndev_ops;
-
-    /* Add here proper net_device initialization */
-    ndev_data->ndev->features |= NETIF_F_HW_CSUM;
-
-    /* Initialize rx_queue */
-    INIT_LIST_HEAD(&ndev_data->rx_queue);
+    list_for_each_entry_safe (vif, safe, &owl->vif_list, list)
+        owl_delete_interface(vif);
 }
 
-/* Creates wiphy context and net_device with wireless_dev.
- * wiphy/net_device/wireless_dev is basic interfaces for the kernel to interact
- * with driver as wireless one. It returns driver's main "owl" context.
+/* Allocate and register wiphy.
+ * Virtual interfaces should be created by nl80211, which will
+ * call cfg80211_ops->add_iface(). This program create a wiphy
+ * for every virtual interface, which means an virtual interface
+ * has an physical (virtual) adapter under it.
  */
-static struct owl_context *owl_create_context(void)
+static struct wiphy *owl_cfg80211_add(void)
 {
-    struct owl_context *ret = NULL;
-    struct owl_wiphy_priv_context *wiphy_data = NULL;
-    struct owl_ndev_priv_context *ndev_data = NULL;
-
-    /* allocate for owl context */
-    ret = kmalloc(sizeof(*ret), GFP_KERNEL);
-    if (!ret)
-        goto l_error;
+    struct wiphy *wiphy = NULL;
 
     /* allocate wiphy context. It is possible just to use wiphy_new().
-     * wiphy should represent physical FullMAC wireless device. One wiphy can
-     * have serveral network interfaces - for that, we need to implement
-     * add_virtual_intf() from cfg80211_ops.
+     * wiphy should represent physical FullMAC wireless device. We need
+     * to implement add_virtual_intf() from cfg80211_ops for adding
+     * interface(s) on top of a wiphy.
+     * NULL means use the default phy%d naming.
      */
-    ret->wiphy = wiphy_new_nm(
-        &owl_cfg_ops, sizeof(struct owl_wiphy_priv_context), WIPHY_NAME);
-    if (!ret->wiphy)
-        goto l_error_wiphy;
-
-    /* save owl context in wiphy private data. */
-    wiphy_data = wiphy_get_owl_context(ret->wiphy);
-    wiphy_data->owl = ret;
+    wiphy = wiphy_new_nm(&owl_cfg_ops, 0, NULL);
+    if (!wiphy) {
+        printk(KERN_INFO "couldn't allocate wiphy device\n");
+        return NULL;
+    }
 
     /* FIXME: set device object as wiphy "parent" */
     /* set_wiphy_dev(ret->wiphy, dev); */
@@ -783,135 +943,74 @@ static struct owl_context *owl_create_context(void)
      * add other required types like  "BIT(NL80211_IFTYPE_STATION) |
      * BIT(NL80211_IFTYPE_AP)" etc.
      */
-    ret->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
+    wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
 
     /* wiphy should have at least 1 band.
      * Also fill NL80211_BAND_5GHZ if required. In this module, only 1 band
      * with 1 "channel"
      */
-    ret->wiphy->bands[NL80211_BAND_2GHZ] = &nf_band_2ghz;
+    wiphy->bands[NL80211_BAND_2GHZ] = &nf_band_2ghz;
 
     /* scan - if the device supports "scan", we need to define max_scan_ssids
      * at least.
      */
-    ret->wiphy->max_scan_ssids = 69;
+    wiphy->max_scan_ssids = MAX_PROBED_SSIDS;
 
     /* Signal type
      * CFG80211_SIGNAL_TYPE_UNSPEC allows us specify signal strength from 0 to
      * 100. The reasonable value for CFG80211_SIGNAL_TYPE_MBM is -3000 to -10000
      * (mdBm).
      */
-    ret->wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
+    wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
 
-    ret->wiphy->flags |= WIPHY_FLAG_NETNS_OK;
+    wiphy->flags |= WIPHY_FLAG_NETNS_OK;
 
-    ret->associated = false;
-    ret->active_time = jiffies;
-
-    /* register wiphy, if everything ok - there should be another wireless
+    /* zegister wiphy, if everything ok - there should be another wireless
      * device in system. use command: $ iw list
      * Wiphy owl
      */
-    if (wiphy_register(ret->wiphy) < 0)
+    if (wiphy_register(wiphy) < 0) {
+        printk(KERN_INFO "couldn't register wiphy device\n");
         goto l_error_wiphy_register;
-
-    INIT_LIST_HEAD(&ret->netintf_list);
-    for (int i = 0; i < NR_NDEV; i++) {
-        /* allocate network device context. */
-        struct net_device *ndev = NULL;
-        ndev = alloc_netdev(sizeof(struct owl_ndev_priv_context),
-                            i == 0 ? NDEV_NAME : SINKDEV_NAME, NET_NAME_ENUM,
-                            ether_setup);
-        if (!ndev)
-            goto l_error_alloc_ndev;
-
-        /* fill private data of network context. */
-        ndev_data = ndev_get_owl_context(ndev);
-        ndev_data->owl = ret;
-        ndev_data->ndev = ndev;
-        owl_ndev_priv_setup_helper(ndev_data);
-
-        /* register network device. If everything is ok, there should be new
-         * network device: $ ip a owl0: <BROADCAST,MULTICAST> mtu 1500 qdisc
-         * noop state DOWN group default link/ether 00:00:00:00:00:00 brd
-         * ff:ff:ff:ff:ff:ff
-         */
-        if (register_netdev(ndev_data->ndev))
-            goto l_error_ndev_register;
-
-        list_add_tail(&ndev_data->list, &ret->netintf_list);
     }
 
-    return ret;
+    return wiphy;
 
-l_error_ndev_register:
-    list_for_each_entry (ndev_data, &ret->netintf_list, list) {
-        free_netdev(ndev_data->ndev);
-        list_del(&ndev_data->list);
-    }
-l_error_alloc_ndev:
-    wiphy_unregister(ret->wiphy);
 l_error_wiphy_register:
-    wiphy_free(ret->wiphy);
-l_error_wiphy:
-    kfree(ret);
-l_error:
+    wiphy_free(wiphy);
     return NULL;
 }
 
-static void owl_free(struct owl_context *ctx)
-{
-    struct owl_ndev_priv_context *item = NULL;
-    if (!ctx)
-        return;
-
-    if (list_empty(&ctx->netintf_list)) {
-        printk(KERN_NOTICE "owl netintf: No interfcae found in netintf_list\n");
-        return;
-    }
-
-    list_for_each_entry (item, &ctx->netintf_list, list) {
-        unregister_netdev(item->ndev);
-        free_netdev(item->ndev);
-    }
-
-    wiphy_unregister(ctx->wiphy);
-    wiphy_free(ctx->wiphy);
-    kfree(ctx);
-}
-
-static struct owl_context *g_ctx = NULL;
-
 static int __init vwifi_init(void)
 {
-    g_ctx = owl_create_context();
-    if (!g_ctx)
-        return 1;
+    owl = kmalloc(sizeof(struct owl_context), GFP_KERNEL);
+    if (!owl) {
+        printk("couldn't allocate space for owl_context\n");
+        return -ENOMEM;
+    }
 
-    mutex_init(&g_ctx->lock);
+    mutex_init(&owl->lock);
+    INIT_LIST_HEAD(&owl->vif_list);
 
-    INIT_WORK(&g_ctx->ws_connect, owl_connect_routine);
-    g_ctx->connecting_ssid[0] = 0;
-
-    INIT_WORK(&g_ctx->ws_disconnect, owl_disconnect_routine);
-    g_ctx->disconnect_reason_code = 0;
-
-    INIT_WORK(&g_ctx->ws_scan, owl_scan_routine);
-    g_ctx->scan_request = NULL;
-
-    INIT_WORK(&g_ctx->ws_scan_timeout, owl_scan_timeout_work);
-    timer_setup(&g_ctx->scan_timeout, owl_scan_timeout, 0);
+    for (int i = 0; i < interfaces; i++) {
+        struct wiphy *wiphy = owl_cfg80211_add();
+        if (!wiphy)
+            goto l_cfg80211_add;
+        if (!owl_interface_add(wiphy, i))
+            goto l_interface_add;
+    }
 
     return 0;
+
+l_interface_add:
+l_cfg80211_add:
+    owl_free();
+    return -1;
 }
 
 static void __exit vwifi_exit(void)
 {
-    /* make sure that no work is queued */
-    cancel_work_sync(&g_ctx->ws_connect);
-    cancel_work_sync(&g_ctx->ws_disconnect);
-    cancel_work_sync(&g_ctx->ws_scan);
-    owl_free(g_ctx);
+    owl_free();
 }
 
 module_init(vwifi_init);

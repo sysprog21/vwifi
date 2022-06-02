@@ -39,9 +39,14 @@ Load  `cfg80211` kernel module:
 sudo modprobe cfg80211
 ```
 
-Insert `vwifi` driver:
+Insert `vwifi` driver. In this case, vwifi will create two interfaces for us:
 ```shell
-sudo insmod vwifi.ko ssid_list='[MyHomeWiFi][MyWifi_1][MyWifi_2]'
+sudo insmod vwifi.ko ssid_list='[MyHomeWiFi][MyWifi_1][MyWifi_2]' interfaces=2
+```
+
+Check wiphy:
+```shell
+iw list
 ```
 
 Check network interfaces:
@@ -49,12 +54,12 @@ Check network interfaces:
 ip link
 ```
 
-There should be an entry starting with `owl0` and `owl0sink`, which is exactly the interface created by `vwifi`.
+There should be an entry starting with `owl0` and `owl1`, which are exactly the interfaces created by `vwifi`.
 
 Bring up the two network interfaces:
 ```shell
 sudo ip link set owl0 up
-sudo ip link set owl0sink up
+sudo ip link set owl1 up
 ```
 
 Show available wireless interfaces:
@@ -62,18 +67,18 @@ Show available wireless interfaces:
 sudo iw dev
 ```
 
-You should get something as following:
+You should get something as following (the number behind # may be different):
 ```
-phy#0
-	Interface owl0sink
-		ifindex 4
-		wdev 0x2
-		addr 00:6f:77:6c:30:73
+phy#8
+	Interface owl1
+		ifindex 12
+		wdev 0x800000001
+		addr 00:6f:77:6c:31:00
 		type managed
-
+phy#7
 	Interface owl0
-		ifindex 3
-		wdev 0x1
+		ifindex 11
+		wdev 0x700000001
 		addr 00:6f:77:6c:30:00
 		type managed
 ```
@@ -85,20 +90,38 @@ sudo iw list
 
 Reference output:
 ```
-Wiphy owl
+Wiphy phy8
 	max # scan SSIDs: 69
 	max scan IEs length: 0 bytes
 	max # sched scan SSIDs: 0
 	max # match sets: 0
-	max # scan plans: 1
-	max scan plan interval: -1
-	max scan plan iterations: 0
 	Retry short limit: 7
 	Retry long limit: 4
 	Coverage class: 0 (up to 0m)
 	Available Antennas: TX 0 RX 0
 	Supported interface modes:
 		 * managed
+	Band 1:
+		Bitrates (non-HT):
+			* 1.0 Mbps
+			* 2.0 Mbps
+			* 5.5 Mbps
+			* 11.0 Mbps
+		Frequencies:
+			* 2437 MHz [6] (20.0 dBm)
+	Supported commands:
+		 * set_wiphy_netns
+		 * connect
+		 * disconnect
+	software interface modes (can always be added):
+	interface combinations are not supported
+	Device supports scan flush.
+	max # scan plans: 1
+	max scan plan interval: -1
+	max scan plan iterations: 0
+	Supported extended features:
+Wiphy phy7
+	... (omit)
 ```
 
 Get station informations of `owl0`:
@@ -109,18 +132,17 @@ sudo iw dev owl0 station get 00:6f:77:6c:30:00
 You should get something as following:
 ```
 Station 00:6f:77:6c:30:00 (on owl0)
-	inactive time:	141876 ms
+	inactive time:	7142872 ms
 	rx bytes:	0
 	rx packets:	0
 	tx bytes:	0
 	tx packets:	0
 	tx failed:	0
-	signal:  	-52 dBm
-	current time:	1651766257568 ms
-
+	signal:  	-57 dBm
+	current time:	1654580295950 ms
 ```
-You can get informations of `owl0sink` by replacing `00:6f:77:6c:30:00` to
-`00:6f:77:6c:30:73`.
+You can get informations of `owl01` by replacing `00:6f:77:6c:30:00` to
+`00:6f:77:6c:31:00`.
 
 Then, perform scanning:
 ```shell
@@ -129,14 +151,13 @@ sudo iw dev owl0 scan
 
 You should get the following:
 ```
-BSS ca:9c:00:c6:c2:eb(on owl0)
-	TSF: 47065806941 usec (0d, 13:04:25)
+BSS 26:05:d1:60:34:c8(on owl0)
+	TSF: 7493882579 usec (0d, 02:04:53)
 	freq: 2437
 	beacon interval: 100 TUs
 	capability: ESS (0x0001)
-	signal: -59.00 dBm
+	signal: -31.00 dBm
 	last seen: 0 ms ago
-	SSID: MyHomeWifi
 	SSID: MyHomeWiFi
 ```
 

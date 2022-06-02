@@ -18,8 +18,8 @@ fi
 if [ $final_ret -eq 0 ]; then
     # to avoid device or resource busy error
     sleep 0.5
-
     sudo ip link set owl0 up
+    sudo ip link set owl1 up
     sudo iw dev owl0 scan > scan_result.log
     cat scan_result.log | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| head -n 1 > scan_bssid.log
     sudo iw dev owl0 connect MyHomeWiFi
@@ -31,6 +31,7 @@ if [ $final_ret -eq 0 ]; then
     fi
 
     # verify TSF (in usec)
+    sudo iw dev owl0 scan > scan_result.log
     tsf=$(cat scan_result.log | grep "TSF" | awk '{print $2}')
     uptime=$(cat /proc/uptime | awk '{print $1}')
     uptime=$(echo "$uptime*1000000" | bc | awk -F "." '{print $1}')
@@ -41,26 +42,24 @@ if [ $final_ret -eq 0 ]; then
         final_ret=4
     fi
     # Ping test result
-    sudo ip link set owl0sink up
-    sudo ip netns add sta0
-    sudo ip netns add sink
-    # Create macvlan bridge mode interface.
-    # All stations are directly connected to each other with a simple bridge via the physical interfaces (owl0/owl0sink).
-    # After raw packet enter macvlan, it will follow normal kernel l2/l3 data path traffic process.
-    #  macvlan0 10.0.0.1/24 <---> owl0 <---> vwifi driver <---> owl0sink <---> macvlan1 10.0.0.2/24
-    sudo ip link add macvlan0 link owl0 type macvlan mode bridge
-    sudo ip link add macvlan1 link owl0sink type macvlan mode bridge
+    sudo iw dev > device.log
+    owl0_phy=$(cat device.log | grep -B 1 owl0 | grep phy)
+    owl0_phy=${owl0_phy/\#/}
+    owl1_phy=$(cat device.log | grep -B 1 owl1 | grep phy)
+    owl1_phy=${owl1_phy/\#/}
+    
+    sudo ip netns add ns0
+    sudo ip netns add ns1
+    sudo iw phy $owl0_phy set netns name ns0
+    sudo iw phy $owl1_phy set netns name ns1
 
-    sudo ip link set macvlan0 netns sta0
-    sudo ip link set macvlan1 netns sink
+    sudo ip netns exec ns0 ip link set owl0 up
+    sudo ip netns exec ns0 ip addr add 10.0.0.1/24 dev owl0
 
-    sudo ip netns exec sta0 ip link set macvlan0 up
-    sudo ip netns exec sta0 ip addr add 10.0.0.1/24 dev macvlan0
+    sudo ip netns exec ns1 ip link set owl1 up
+    sudo ip netns exec ns1 ip addr add 10.0.0.2/24 dev owl1
 
-    sudo ip netns exec sink ip link set macvlan1 up
-    sudo ip netns exec sink ip addr add 10.0.0.2/24 dev macvlan1
-
-    sudo ip netns exec sta0 ping 10.0.0.2 -c 4
+    sudo ip netns exec ns0 ping 10.0.0.2 -c 4
     ping_rc=$?
     if [ $ping_rc -ne 0 ]; then
         final_ret=5
@@ -68,11 +67,12 @@ if [ $final_ret -eq 0 ]; then
 
     # plot the distribution of RSSI of owl0
     echo -e "\n\n######## collecting RSSI information of owl0, please wait... ##########"
-    owl0_mac=$(sudo iw dev | grep -E 'owl0$' -A 3 | grep addr | awk '{print $2}')
+    owl0_mac=$(sudo ip netns exec ns0 iw dev | grep -E 'owl0$' -A 3 | grep addr | awk '{print $2}')
     counts=1000 # do get_station 1000 times
 
     for i in $(seq 1 1 $counts); do
-        owl0_signal=$(sudo iw dev owl0 station get $owl0_mac | grep "signal" | awk '{print $2}')
+        owl0_signal=$(sudo ip netns exec ns0 \
+            iw dev owl0 station get $owl0_mac | grep "signal" | awk '{print $2}')
         echo $owl0_signal >> rssi.txt
     done
 
@@ -85,9 +85,9 @@ fi
 
 if [ $final_ret -eq 0 ]; then
     remove_kmod vwifi
-    sudo ip netns delete sta0
-    sudo ip netns delete sink
-    rm scan_result.log scan_bssid.log connected.log rssi.txt
+    sudo ip netns del ns0
+    sudo ip netns del ns1
+    rm scan_result.log scan_bssid.log connected.log device.log rssi.txt 
     echo "==== Test PASSED ===="
     exit 0
 fi
