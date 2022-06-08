@@ -25,3 +25,9 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# Test scripts output files
+scan_result.log
+scan_bssid.log
+connected.log
+rssi.txt
