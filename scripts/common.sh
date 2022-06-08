@@ -46,3 +46,21 @@ function remove_kmod() {
     sudo rmmod $mod_name > /dev/null
     return 0
 }
+
+function start_hostapd() {
+	echo "Start Hostapd"
+	which hostapd
+	ret=$?
+	if [ $ret -eq 1 ] ; then
+		echo "Hostapd is not found"
+		return 3
+	fi
+	sudo hostapd -B $1 > /dev/null
+	return 0
+}
+
+function stop_hostapd() {
+	echo "Stop Hostapd"
+	sudo kill -9 $(pidof hostapd) > /dev/null
+	return 0
+}

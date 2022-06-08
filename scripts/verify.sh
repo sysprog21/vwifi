@@ -15,31 +15,36 @@ if [ $? -ne 0 ]; then
     final_ret=2
 fi
 
+start_hostapd $ROOT/scripts/hostapd.conf
+if [ $? -ne 0 ]; then
+    final_ret=3
+fi
+
 if [ $final_ret -eq 0 ]; then
     # to avoid device or resource busy error
     sleep 0.5
     sudo ip link set owl0 up
     sudo ip link set owl1 up
     sudo iw dev owl0 scan > scan_result.log
-    cat scan_result.log | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| head -n 1 > scan_bssid.log
-    sudo iw dev owl0 connect MyHomeWiFi
+    cat scan_result.log | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| tail -n 1 > scan_bssid.log
+    sudo iw dev owl0 connect TestAP
     sudo iw dev owl0 link | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > connected.log
 
     DIFF=$(diff connected.log scan_bssid.log)
     if [ "$DIFF" != "" ]; then
-        final_ret=3
+        final_ret=4
     fi
 
     # verify TSF (in usec)
     sudo iw dev owl0 scan > scan_result.log
-    tsf=$(cat scan_result.log | grep "TSF" | awk '{print $2}')
+    tsf=$(cat scan_result.log | grep "TSF" | tail -n 1 | awk '{print $2}')
     uptime=$(cat /proc/uptime | awk '{print $1}')
     uptime=$(echo "$uptime*1000000" | bc | awk -F "." '{print $1}')
     diff=$((tsf - uptime))
 
     # difference between tsf and uptime should less than 0.5 sec.
     if [ "${diff#-}" -gt 500000 ]; then
-        final_ret=4
+        final_ret=5
     fi
     # Ping test result
     sudo iw dev > device.log
@@ -62,7 +67,7 @@ if [ $final_ret -eq 0 ]; then
     sudo ip netns exec ns0 ping 10.0.0.2 -c 4
     ping_rc=$?
     if [ $ping_rc -ne 0 ]; then
-        final_ret=5
+        final_ret=6
     fi
 
     # plot the distribution of RSSI of owl0
@@ -84,6 +89,7 @@ if [ $final_ret -eq 0 ]; then
 fi
 
 if [ $final_ret -eq 0 ]; then
+    stop_hostapd
     remove_kmod vwifi
     sudo ip netns del ns0
     sudo ip netns del ns1

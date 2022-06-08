@@ -846,6 +846,88 @@ static int owl_delete_interface(struct owl_vif *vif)
     return 0;
 }
 
+/* Called by kernel when user decided to change the interface type. */
+static int owl_change_iface(struct wiphy *wiphy,
+                            struct net_device *ndev,
+                            enum nl80211_iftype type,
+                            struct vif_params *params)
+{
+    switch (type) {
+    case NL80211_IFTYPE_STATION:
+    case NL80211_IFTYPE_AP:
+        ndev->ieee80211_ptr->iftype = type;
+        break;
+    default:
+        pr_info("owl: invalid interface type %u\n", type);
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+/* Called by the kernel when user want to create an Access Point. Now
+ * it just add a ssid to the ssid_table to emulate the AP signal. And
+ * record the ssid to the owl_context.
+ */
+static int owl_start_ap(struct wiphy *wiphy,
+                        struct net_device *ndev,
+                        struct cfg80211_ap_settings *settings)
+{
+    struct owl_vif *vif = ndev_get_owl_vif(ndev);
+
+    pr_info("owl: start acting in AP mode.\n");
+    pr_info("ctrlchn=%d, center=%d, bw=%d, beacon_interval=%d, dtim_period=%d,",
+            settings->chandef.chan->hw_value, settings->chandef.center_freq1,
+            settings->chandef.width, settings->beacon_interval,
+            settings->dtim_period);
+    pr_info("ssid=%s(%zu), auth_type=%d, inactivity_timeout=%d", settings->ssid,
+            settings->ssid_len, settings->auth_type,
+            settings->inactivity_timeout);
+
+    if (settings->ssid == NULL)
+        return -EINVAL;
+
+    /* set AP SSID */
+    memcpy(vif->ssid, settings->ssid, settings->ssid_len);
+    update_ssids(vif->ssid);
+
+    return 0;
+}
+
+/* Called by the kernel when there is need to "stop" from AP mode.
+ * It uses the ssid to remove the AP node of ssid_stable.
+ */
+static int owl_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
+{
+    struct owl_vif *item, *vif = ndev_get_owl_vif(ndev);
+
+    struct ap_info_entry_t *ap;
+    struct hlist_node *tmp;
+    int i;
+
+    pr_info("owl: stop acting in AP mode.\n");
+    if (hash_empty(ssid_table))
+        return -EINVAL;
+
+    hash_for_each_safe (ssid_table, i, tmp, ap, node) {
+        if (!strncmp(ap->bssid, vif->bssid, ETH_ALEN)) {
+            /* Remove AP from ssid_table by bssid */
+            hash_del(&ap->node);
+
+            list_for_each_entry (item, &owl->vif_list, list) {
+                if (!strncmp(vif->bssid, item->bssid, ETH_ALEN) &&
+                    item->sme_state == SME_CONNECTED)
+                    /* Disconnect STA if some STA connected to AP */
+                    schedule_work(&item->ws_disconnect);
+            }
+
+            break;
+        }
+    }
+
+    return 0;
+}
+
 /* Structure of functions for FullMAC 80211 drivers.
  * Functions implemented along with fields/flags in wiphy structure would
  * represent drivers features. This module can only perform "scan" and
@@ -853,10 +935,13 @@ static int owl_delete_interface(struct owl_vif *vif)
  * "connect" there is should be function "disconnect".
  */
 static struct cfg80211_ops owl_cfg_ops = {
+    .change_virtual_intf = owl_change_iface,
     .scan = owl_scan,
     .connect = owl_connect,
     .disconnect = owl_disconnect,
     .get_station = owl_get_station,
+    .start_ap = owl_start_ap,
+    .stop_ap = owl_stop_ap,
 };
 
 /* Array of "supported" channels in 2GHz band. It is required for wiphy.
@@ -943,7 +1028,8 @@ static struct wiphy *owl_cfg80211_add(void)
      * add other required types like  "BIT(NL80211_IFTYPE_STATION) |
      * BIT(NL80211_IFTYPE_AP)" etc.
      */
-    wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
+    wiphy->interface_modes =
+        BIT(NL80211_IFTYPE_STATION) | BIT(NL80211_IFTYPE_AP);
 
     /* wiphy should have at least 1 band.
      * Also fill NL80211_BAND_5GHZ if required. In this module, only 1 band
