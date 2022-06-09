@@ -20,10 +20,10 @@ Since `vwifi` relies on the Linux wireless (IEEE-802.11) subsystem, [iw](https:/
 sudo apt install iw
 ```
 
-If you're going to run the test script(scripts/verify.sh), python3 and some packages
+If you're going to run the test script(scripts/verify.sh), python3, hostapd and some packages
 are necessary:
 ```shell
-sudo apt install python3 python3-pip
+sudo apt install python3 python3-pip hostapd
 pip3 install numpy matplotlib
 ```
 
