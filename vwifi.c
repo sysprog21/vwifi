@@ -674,38 +674,36 @@ static int owl_get_station(struct wiphy *wiphy,
                            const u8 *mac,
                            struct station_info *sinfo)
 {
-    struct owl_vif *vif = NULL;
+    struct owl_vif *vif = ndev_get_owl_vif(dev);
 
-    /* Find the station which is being searched */
-    list_for_each_entry (vif, &owl->vif_list, list) {
-        if (ether_addr_equal(vif->ndev->dev_addr, mac)) {
-            sinfo->filled = BIT_ULL(NL80211_STA_INFO_TX_PACKETS) |
-                            BIT_ULL(NL80211_STA_INFO_RX_PACKETS) |
-                            BIT_ULL(NL80211_STA_INFO_TX_FAILED) |
-                            BIT_ULL(NL80211_STA_INFO_TX_BYTES) |
-                            BIT_ULL(NL80211_STA_INFO_RX_BYTES) |
-                            BIT_ULL(NL80211_STA_INFO_SIGNAL) |
-                            BIT_ULL(NL80211_STA_INFO_INACTIVE_TIME);
+    if (memcmp(mac, vif->bssid, ETH_ALEN))
+        return -ENONET;
 
-            if (vif->sme_state == SME_CONNECTED) {
-                sinfo->filled |= BIT_ULL(NL80211_STA_INFO_CONNECTED_TIME);
-                sinfo->connected_time =
-                    jiffies_to_msecs(jiffies - vif->conn_time) / 1000;
-            }
+    sinfo->filled = BIT_ULL(NL80211_STA_INFO_TX_PACKETS) |
+                    BIT_ULL(NL80211_STA_INFO_RX_PACKETS) |
+                    BIT_ULL(NL80211_STA_INFO_TX_FAILED) |
+                    BIT_ULL(NL80211_STA_INFO_TX_BYTES) |
+                    BIT_ULL(NL80211_STA_INFO_RX_BYTES) |
+                    BIT_ULL(NL80211_STA_INFO_SIGNAL) |
+                    BIT_ULL(NL80211_STA_INFO_INACTIVE_TIME);
 
-            sinfo->tx_packets = vif->stats.tx_packets;
-            sinfo->rx_packets = vif->stats.rx_packets;
-            sinfo->tx_failed = vif->stats.tx_dropped;
-            sinfo->tx_bytes = vif->stats.tx_bytes;
-            sinfo->rx_bytes = vif->stats.rx_bytes;
-            /* For CFG80211_SIGNAL_TYPE_MBM, value is expressed in dbm */
-            sinfo->signal = rand_int_smooth(-100, -30, jiffies);
-            sinfo->inactive_time = jiffies_to_msecs(jiffies - vif->active_time);
-
-            return 0;
-        }
+    if (vif->sme_state == SME_CONNECTED) {
+        sinfo->filled |= BIT_ULL(NL80211_STA_INFO_CONNECTED_TIME);
+        sinfo->connected_time =
+            jiffies_to_msecs(jiffies - vif->conn_time) / 1000;
     }
-    return -ENOENT;
+
+    sinfo->tx_packets = vif->stats.tx_packets;
+    sinfo->rx_packets = vif->stats.rx_packets;
+    sinfo->tx_failed = vif->stats.tx_dropped;
+    sinfo->tx_bytes = vif->stats.tx_bytes;
+    sinfo->rx_bytes = vif->stats.rx_bytes;
+    /* For CFG80211_SIGNAL_TYPE_MBM, value is expressed in dBm */
+    sinfo->signal = rand_int_smooth(-100, -30, jiffies);
+    sinfo->inactive_time = jiffies_to_msecs(jiffies - vif->active_time);
+    /* TODO: Emulate rate and mcs */
+
+    return 0;
 }
 
 /* Create a virtual interface, which owns a wiphy which is not shared
