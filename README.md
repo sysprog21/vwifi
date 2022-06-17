@@ -3,7 +3,7 @@
 `vwifi` implements a minimal interface to achieve basic functionalities,
 such as scanning dummy Wi-Fi network, connecting, and disconnecting from it.
 `vwifi` is based on [cfg80211 subsystem](https://www.kernel.org/doc/html/latest/driver-api/80211/cfg80211.html),
-which works together with FullMAC drivers. At present, it only supports station mode (STA).
+which works together with FullMAC drivers. At present, it supports station mode and Host AP mode.
 
 ## Prerequisite
 
@@ -20,12 +20,33 @@ Since `vwifi` relies on the Linux wireless (IEEE-802.11) subsystem, [iw](https:/
 sudo apt install iw
 ```
 
-If you're going to run the test script(scripts/verify.sh), python3, hostapd and some packages
+If you're going to run the test script(`scripts/verify.sh`), python3, hostapd and some packages
 are necessary:
 ```shell
 sudo apt install python3 python3-pip hostapd
 pip3 install numpy matplotlib
 ```
+
+## Testing environment
+
+<p align="center"><img src="assets/vwifi.png" alt="logo image" width=60%></p>
+
+In our testing environment, we have **one AP and two STA**.
+
+The testing environment is running in IEEE 802.11 infrastructure BSS, so it comes to a constraint: **STA cannot talk to other STAs directly**. Once a STA want to communicate to others, it must pass the packets to AP, and then AP will do the following stuff based on the packet type:
+	1. unicast: if the packet is for another STA, then pass it
+                to the STA and do not pass to protocol stack,
+                otherwise (packet is for AP itself) pass it to
+                protocol stack.
+	2. broadcast: pass packet to another STA except the source STA,
+   	              then pass it to protocol stack.
+ 	3. multicast: do the same thing as broadcast.
+
+In order to test the network enviroment, we can make use of the **Linux network namespace**. Linux network namespace can isolate a network environment from the host, i.e., with its own routes, firewall rules, and network devices. In fact, it's logically another copy of the network stack.
+
+Without network namespace, once we create virtual interfaces (shares the same network namesapce) and we start to transmit/receive packets between them, kernel will use loopback device for packet transmission/reception because kernel found that the sender and receiver is on the same host.
+
+In conclusion, all the interfaces created by `vwifi` in our testing environment will be added to a isolated network naemspace.
 
 ## Build and Run
 
@@ -39,49 +60,51 @@ Load  `cfg80211` kernel module:
 sudo modprobe cfg80211
 ```
 
-Insert `vwifi` driver. In this case, vwifi will create two interfaces for us:
+Insert `vwifi` driver. In this case, vwifi will create three interfaces for us:
+(you can change the parameter "station" on your favor)
 ```shell
-sudo insmod vwifi.ko ssid_list='[MyHomeWiFi][MyWifi_1][MyWifi_2]' interfaces=2
+sudo insmod vwifi.ko station=3
 ```
 
-Check wiphy:
-```shell
-iw list
-```
+We can only create interfaces in station mode in the initilization phase,
+but don't worry, they can be turned to Host AP mode by hostapd afterward.
 
 Check network interfaces:
 ```shell
 ip link
 ```
 
-There should be an entry starting with `owl0` and `owl1`, which are exactly the interfaces created by `vwifi`.
-
-Bring up the two network interfaces:
-```shell
-sudo ip link set owl0 up
-sudo ip link set owl1 up
-```
+There should be an entry starting with `owl0`, `owl1` and `owl2`, which are exactly the interfaces created by `vwifi`.
 
 Show available wireless interfaces:
 ```shell
 sudo iw dev
 ```
 
-You should get something as following (the number behind # may be different):
+You should get something like the following:
 ```
-phy#8
+phy#13
+	Interface owl2
+		ifindex 16
+		wdev 0xd00000001
+		addr 00:6f:77:6c:32:00
+		type managed
+phy#12
 	Interface owl1
-		ifindex 12
-		wdev 0x800000001
+		ifindex 15
+		wdev 0xc00000001
 		addr 00:6f:77:6c:31:00
 		type managed
-phy#7
+phy#11
 	Interface owl0
-		ifindex 11
-		wdev 0x700000001
+		ifindex 14
+		wdev 0xb00000001
 		addr 00:6f:77:6c:30:00
 		type managed
 ```
+
+As you can see, all interfaces own its phy (`struct wiphy`), which means 
+they can be put into the separate network namespaces.
 
 Dump wireless information:
 ```shell
@@ -90,7 +113,7 @@ sudo iw list
 
 Reference output:
 ```
-Wiphy phy8
+Wiphy phy13
 	max # scan SSIDs: 69
 	max scan IEs length: 0 bytes
 	max # sched scan SSIDs: 0
@@ -101,6 +124,7 @@ Wiphy phy8
 	Available Antennas: TX 0 RX 0
 	Supported interface modes:
 		 * managed
+		 * AP
 	Band 1:
 		Bitrates (non-HT):
 			* 1.0 Mbps
@@ -110,7 +134,10 @@ Wiphy phy8
 		Frequencies:
 			* 2437 MHz [6] (20.0 dBm)
 	Supported commands:
+		 * set_interface
+		 * start_ap
 		 * set_wiphy_netns
+		 * set_channel
 		 * connect
 		 * disconnect
 	software interface modes (can always be added):
@@ -120,9 +147,14 @@ Wiphy phy8
 	max scan plan interval: -1
 	max scan plan iterations: 0
 	Supported extended features:
-Wiphy phy7
+Wiphy phy14
+	... (omit)
+Wiphy phy15
 	... (omit)
 ```
+
+The "managed mode" in Supported interface modes is identical
+to station mode.
 
 Get station informations of `owl0`:
 ```shell
@@ -132,62 +164,148 @@ sudo iw dev owl0 station get 00:6f:77:6c:30:00
 You should get something as following:
 ```
 Station 00:6f:77:6c:30:00 (on owl0)
-	inactive time:	7142872 ms
+	inactive time:	600260 ms
 	rx bytes:	0
 	rx packets:	0
 	tx bytes:	0
 	tx packets:	0
 	tx failed:	0
-	signal:  	-57 dBm
-	current time:	1654580295950 ms
+	signal:  	-33 dBm
+	current time:	1655310275763 ms
 ```
-You can get informations of `owl01` by replacing `00:6f:77:6c:30:00` to
-`00:6f:77:6c:31:00`.
 
-Then, perform scanning:
+Then, create three network namespaces:
 ```shell
-sudo iw dev owl0 scan
+sudo ip netns add ns0
+sudo ip netns add ns1
+sudo ip netns add ns2
+````
+
+Put the three interfaces into separate network namespaces:
+(actually, we put the `wiphy` into network namespace, and the 
+interface on top of the `wiphy` will be in there.)
+```shell
+sudo iw phy phy11 set netns name ns0
+sudo iw phy phy12 set netns name ns1
+sudo iw phy phy13 set netns name ns2
+```
+
+Then, bring up the three interfaces:
+```shell
+sudo ip netns exec ns0 ip link set owl0 up
+sudo ip netns exec ns1 ip link set owl1 up
+sudo ip netns exec ns2 ip link set owl2 up
+```
+
+Running `hostapd` based on the script `scripts/hostapd.conf`:
+```shell
+interface=owl0
+driver=nl80211
+ssid=TestAP
+channel=6
+```
+
+Make sure running `hostapd` in the network namespace that `owl0` is in:
+```shell	
+sudo ip netns exec ns0 hostapd -B scripts/hostapd.conf
+```
+
+Now, that's assign IP address for each interface:
+```shell
+sudo ip netns exec ns0 ip addr add 10.0.0.1/24 dev owl0
+sudo ip netns exec ns1 ip addr add 10.0.0.2/24 dev owl1
+sudo ip netns exec ns2 ip addr add 10.0.0.3/24 dev owl2
+```
+
+Then ping `owl2` (10.0.0.3) by `owl1` (10.0.0.2):
+```shell
+sudo ip netns exec ns1 ping -c 1 10.0.0.3
+```
+
+You should fail to ping `owl2` by `owl1`, it's normal.
+Because they haven't connected to AP `owl0` (`SSID: TestAP`),
+and STA are not allowed to communicate with others without
+the intervention of AP.
+
+Then, perform scanning on `owl1`:
+```shell
+sudo ip netns exec ns1 iw dev owl1 scan
 ```
 
 You should get the following:
-```
-BSS 26:05:d1:60:34:c8(on owl0)
-	TSF: 7493882579 usec (0d, 02:04:53)
+```shell
+BSS 00:6f:77:6c:30:00(on owl1)
+	TSF: 1859697982 usec (0d, 00:30:59)
 	freq: 2437
 	beacon interval: 100 TUs
 	capability: ESS (0x0001)
-	signal: -31.00 dBm
+	signal: -43.00 dBm
 	last seen: 0 ms ago
-	SSID: MyHomeWiFi
+	SSID: TestAP
 ```
 
-Finally, we can connect to the dummy SSID `MyHomeWiFi`:
+Do the same thing to `owl2`.
+
+Then connect `owl1` and `owl2` to AP `owl0` (`SSID: TestAP`):
 ```shell
-sudo iw dev owl0 connect MyHomeWiFi
+sudo ip netns exec ns1 iw dev owl1 connect TestAP
+sudo ip netns exec ns2 iw dev owl2 connect TestAP
 ```
 
 Validate the connection:
 ```shell
-sudo iw dev owl0 link
+sudo ip netns exec ns1 iw dev owl1 link
 ```
 
 Reference output:
-```
-Connected to 26:05:d1:60:34:c8 (on owl0)
-	SSID: MyHomeWiFi
+```shell
+Connected to 00:6f:77:6c:30:00 (on owl1)
+	SSID: TestAP
 	freq: 2437
+	RX: 0 bytes (0 packets)
+	TX: 0 bytes (0 packets)
+	signal: -31 dBm
 ```
 
-Change wifi list:
-```
-echo -n "[MyHomeWiFi][MyWifi_1][MyWifi_2]" | sudo tee /sys/module/vwifi/parameters/ssid_list
+Finally, we can do the ping test:
+1. ping between two STA (`owl1`, `owl2`)
+```shell
+sudo ip netns exec ns1 ping -c 4 10.0.0.3
 ```
 
-SSID Naming Convention:
+You should get something like the following:
+```shell
+PING 10.0.0.3 (10.0.0.3) 56(84) bytes of data.
+64 bytes from 10.0.0.3: icmp_seq=1 ttl=64 time=0.188 ms
+64 bytes from 10.0.0.3: icmp_seq=2 ttl=64 time=0.147 ms
+64 bytes from 10.0.0.3: icmp_seq=3 ttl=64 time=0.082 ms
+64 bytes from 10.0.0.3: icmp_seq=4 ttl=64 time=0.136 ms
 
-Don't put `[` or `]` in your SSID.
-Also, the length of each SSID should be restricted between 0 and 32.
-The default value of `ssid_list` is `[MyHomeWiFi]` if it's not specified explicitly by user.
+--- 10.0.0.3 ping statistics ---
+4 packets transmitted, 4 received, 0% packet loss, time 3036ms
+rtt min/avg/max/mdev = 0.082/0.138/0.188/0.037 ms
+```
+
+2. ping between AP (`owl0`) and STA (`owl2`)
+```shell
+sudo ip netns exec ns2 ping -c 4 10.0.0.1
+```
+
+You should get something like the following.
+
+```shell
+PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
+64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.342 ms
+64 bytes from 10.0.0.1: icmp_seq=2 ttl=64 time=0.054 ms
+64 bytes from 10.0.0.1: icmp_seq=3 ttl=64 time=0.106 ms
+64 bytes from 10.0.0.1: icmp_seq=4 ttl=64 time=0.063 ms
+
+--- 10.0.0.1 ping statistics ---
+4 packets transmitted, 4 received, 0% packet loss, time 3058ms
+rtt min/avg/max/mdev = 0.054/0.141/0.342/0.117 ms
+```
+
+We can simply run the test script `scripts/verify.sh` for doing all the operations above.
 
 Optional, you can use wireless device monitoring applications such as [wavemon](https://github.com/uoaerg/wavemon) to
 watch signal and noise levels, packet statistics, device configuration and network parameters of `vwifi`.
@@ -196,24 +314,6 @@ sudo apt install wavemon
 ```
 
 <p align="center"><img src="assets/wavemon.png" alt="logo image" width=40%></p>
-
-
-Redirect Packet to Kernel Network Stack:
-
-On the host ingress side, if the incoming packet source IP or source MAC is same as the host, the the packet will be ignored by kernel.
-In order to handle the protocol packets via kernel, we create two network namespaces (`netns`) to isolate the host network environment and `viwifi` network counterpart.
-A network namespace is a logical copy of the network stack from the host system.
-Network namespaces are useful for setting up containers or virtual environments.
-Each namespace has its IP addresses, network interfaces, routing tables, and so forth.
-
-On the other hand, a `netns` need an interface to communicate with host network with L2 ability, and [MACVLAN Bridge](https://developers.redhat.com/blog/2018/10/22/introduction-to-linux-interfaces-for-virtual-networking) mode matches the requirement.
-The `MACVLAN` provides two essential functionalities for testing scenario.
-1. Create L2 virtual network interface for `netns`.
-2. Binding L2 virtual network with vwifi network interface.
-
-Hence, when `owl0` received the packet, it will send to the namespace and allow kernel network stack manipulating the protocol packets.
-
-<p align="center"><img src="assets/macvlan.png" alt="logo image" width=40%></p>
 
 ## License
 

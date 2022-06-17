@@ -12,6 +12,7 @@ function check_kmod() {
 
 function insert_kmod() {
     local mod_name=$1
+    local param=$2
     local noko_name=$(echo $mod_name |sed s/.ko//)
     check_kmod $noko_name
     ret=$?
@@ -19,7 +20,7 @@ function insert_kmod() {
         sudo rmmod $noko_name > /dev/null
     fi
     echo "Installing Module $mod_name"
-    sudo insmod $mod_name
+    sudo insmod $mod_name $param
     return $(check_kmod $noko_name)
 }
 
