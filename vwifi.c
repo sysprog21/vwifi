@@ -991,37 +991,36 @@ static struct cfg80211_ops owl_cfg_ops = {
     .stop_ap = owl_stop_ap,
 };
 
-/* Array of "supported" channels in 2GHz band. It is required for wiphy.
- * For demo - the only channel 6.
- */
+/* Macro for defining channel array */
+#define CHAN_2GHZ(_channel, _freq)                         \
+    {                                                      \
+        .band = NL80211_BAND_2GHZ, .hw_value = (_channel), \
+        .center_freq = (_freq),                            \
+    }
+
+/* Macro for defining rate table */
+#define RATE_ENT(_rate, _hw_value)                   \
+    {                                                \
+        .bitrate = (_rate), .hw_value = (_hw_value), \
+    }
+
+/* Array of "supported" channels in 2GHz band. It is required for wiphy. */
 static struct ieee80211_channel owl_supported_channels_2ghz[] = {
-    {
-        .band = NL80211_BAND_2GHZ,
-        .hw_value = 6,
-        .center_freq = 2437,
-    },
+    CHAN_2GHZ(1, 2412),  CHAN_2GHZ(2, 2417),  CHAN_2GHZ(3, 2422),
+    CHAN_2GHZ(4, 2427),  CHAN_2GHZ(5, 2432),  CHAN_2GHZ(6, 2437),
+    CHAN_2GHZ(7, 2442),  CHAN_2GHZ(8, 2447),  CHAN_2GHZ(9, 2452),
+    CHAN_2GHZ(10, 2457), CHAN_2GHZ(11, 2462), CHAN_2GHZ(12, 2467),
+    CHAN_2GHZ(13, 2472), CHAN_2GHZ(14, 2484),
 };
 
 /* Array of supported rates, required to support at least those next rates
  * for 2GHz band.
  */
 static struct ieee80211_rate owl_supported_rates_2ghz[] = {
-    {
-        .bitrate = 10,
-        .hw_value = 0x1,
-    },
-    {
-        .bitrate = 20,
-        .hw_value = 0x2,
-    },
-    {
-        .bitrate = 55,
-        .hw_value = 0x4,
-    },
-    {
-        .bitrate = 110,
-        .hw_value = 0x8,
-    },
+    RATE_ENT(10, 0x1),    RATE_ENT(20, 0x2),    RATE_ENT(55, 0x4),
+    RATE_ENT(110, 0x8),   RATE_ENT(60, 0x10),   RATE_ENT(90, 0x20),
+    RATE_ENT(120, 0x40),  RATE_ENT(180, 0x80),  RATE_ENT(240, 0x100),
+    RATE_ENT(360, 0x200), RATE_ENT(480, 0x400), RATE_ENT(540, 0x800),
 };
 
 /* Describes supported band of 2GHz. */
