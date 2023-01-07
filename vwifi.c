@@ -1099,7 +1099,7 @@ static struct wiphy *owl_cfg80211_add(void)
 
     wiphy->flags |= WIPHY_FLAG_NETNS_OK;
 
-    /* zegister wiphy, if everything ok - there should be another wireless
+    /* register wiphy, if everything ok - there should be another wireless
      * device in system. use command: $ iw list
      * Wiphy owl
      */
