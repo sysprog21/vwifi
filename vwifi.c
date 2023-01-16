@@ -97,6 +97,7 @@ struct owl_vif {
         };
         /* Structure for AP mode */
         struct {
+            bool ap_enabled;
             /* List node for storing AP (owl->ap_list is the head),
              * this field is for interface in AP mode.
              */
@@ -413,7 +414,7 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
 
     /* TX by interface of STA mode */
     if (vif->wdev.iftype == NL80211_IFTYPE_STATION) {
-        if (vif->ap) {
+        if (vif->ap && vif->ap->ap_enabled) {
             dest_vif = vif->ap;
 
             if (__owl_ndo_start_xmit(vif, dest_vif, skb))
@@ -599,7 +600,9 @@ static void owl_disconnect_routine(struct work_struct *w)
             return;
         }
 
-        list_del(&vif->bss_list);
+        if (vif->ap->ap_enabled && !list_empty(&vif->bss_list))
+            list_del(&vif->bss_list);
+
         mutex_unlock(&vif->ap->lock);
 
         vif->ap = NULL;
@@ -895,6 +898,8 @@ static int owl_start_ap(struct wiphy *wiphy,
     /* Add AP to global ap_list */
     list_add_tail(&vif->ap_list, &owl->ap_list);
 
+    vif->ap_enabled = true;
+
     return 0;
 }
 
@@ -921,6 +926,8 @@ static int owl_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
 
         mutex_unlock(&owl->lock);
     }
+
+    vif->ap_enabled = false;
 
     return 0;
 }
