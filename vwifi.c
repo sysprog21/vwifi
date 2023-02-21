@@ -6,6 +6,7 @@
 #include <linux/skbuff.h>
 #include <linux/string.h>
 #include <linux/timer.h>
+#include <linux/version.h>
 #include <linux/workqueue.h>
 #include <net/cfg80211.h>
 
@@ -324,7 +325,11 @@ static void owl_rx(struct net_device *dev)
     skb->dev = dev;
     skb->protocol = eth_type_trans(skb, dev);
     skb->ip_summed = CHECKSUM_UNNECESSARY; /* don't check it */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 18, 0)
     netif_rx_ni(skb);
+#else
+    netif_rx(skb);
+#endif
 
     return;
 
