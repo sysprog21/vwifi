@@ -160,7 +160,7 @@ if [ $final_ret -eq 0 ]; then
     python3 $ROOT/scripts/plot_rssi.py
     plot_rc=$?
     if [ $plot_rc -ne 0 ]; then
-        plot_rc=9
+        final_ret=9
     fi
 fi
 
