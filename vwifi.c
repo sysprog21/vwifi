@@ -289,8 +289,8 @@ static void owl_rx(struct net_device *dev)
     if (vif->wdev.iftype == NL80211_IFTYPE_AP) {
         struct ethhdr *eth_hdr = (struct ethhdr *) skb->data;
 
-        /* Receiving a multicast/broadcast packet, send it to every
-         * STA except the source STA, and pass it to protocol stack.
+        /* When receiving a multicast/broadcast packet, it is sent to every
+         * STA except the source STA, and then passed to the protocol stack.
          */
         if (is_multicast_ether_addr(eth_hdr->h_dest)) {
             pr_info("owl: is_multicast_ether_addr\n");
@@ -298,8 +298,8 @@ static void owl_rx(struct net_device *dev)
         }
         /* Receiving a unicast packet */
         else {
-            /* The packet is not for AP itself, send it to destination
-             * STA, and do not pass it to protocol stack.
+            /* The packet is not intended for the AP itself. Instead, it is
+             * sent to the destination STA and not passed to the protocol stack.
              */
             if (!ether_addr_equal(eth_hdr->h_dest, vif->ndev->dev_addr)) {
                 skb1 = skb;
@@ -426,8 +426,7 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
         /* Check if the packet is broadcasting */
         if (is_broadcast_ether_addr(eth_hdr->h_dest)) {
             list_for_each_entry (dest_vif, &vif->bss_list, bss_list) {
-                /* Don't send broadcast packet back
-                 * to the source interface.
+                /* Don't send broadcast packet back to the source interface.
                  */
                 if (ether_addr_equal(eth_hdr->h_source,
                                      dest_vif->ndev->dev_addr))
@@ -797,9 +796,10 @@ static struct wireless_dev *owinterface_add(struct wiphy *wiphy, int if_idx)
     memcpy(vif->ndev->dev_addr, intf_name, ETH_ALEN);
 
     /* register network device. If everything is ok, there should be new
-     * network device: $ ip a owl0: <BROADCAST,MULTICAST> mtu 1500 qdisc
-     * noop state DOWN group default link/ether 00:00:00:00:00:00 brd
-     * ff:ff:ff:ff:ff:ff
+     * network device: $ ip a
+     * owl0: <BROADCAST,MULTICAST> mtu 1500 qdisc
+     *       noop state DOWN group default link/ether 00:00:00:00:00:00
+     *       brd ff:ff:ff:ff:ff:ff
      */
     if (register_netdev(vif->ndev))
         goto error_ndev_register;
@@ -1106,7 +1106,6 @@ static struct wiphy *owcfg80211_add(void)
 
     /* register wiphy, if everything ok - there should be another wireless
      * device in system. use command: $ iw list
-     * Wiphy owl
      */
     if (wiphy_register(wiphy) < 0) {
         pr_info("couldn't register wiphy device\n");
