@@ -1,10 +1,7 @@
 #include <linux/etherdevice.h>
-#include <linux/hashtable.h>
-#include <linux/list.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/random.h>
-#include <linux/skbuff.h>
-#include <linux/string.h>
 #include <linux/timer.h>
 #include <linux/version.h>
 #include <linux/workqueue.h>
