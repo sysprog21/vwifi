@@ -303,7 +303,7 @@ static void owl_rx(struct net_device *dev)
         /* Receiving a unicast packet */
         else {
             /* The packet is not for AP itself, send it to destination
-             * STA, and do not pass it to procotol stack.
+             * STA, and do not pass it to protocol stack.
              */
             if (!ether_addr_equal(eth_hdr->h_dest, vif->ndev->dev_addr)) {
                 skb1 = skb;
