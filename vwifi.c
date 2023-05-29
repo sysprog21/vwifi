@@ -30,29 +30,25 @@ struct owl_packet {
 enum vwifi_state { OWL_READY, OWL_SHUTDOWN };
 
 /* Context for the whole program, so there's only single owl_context
- * no matter the number of virtual interfaces.
- * Fileds in the structure are interface-independent.
+ * regardless of the number of virtual interfaces. Fields in the structure
+ * are interface-independent.
  */
 struct owl_context {
-    /* We may not need this lock, cause vif_list would not change during
+    /* We may not need this lock because vif_list would not change during
      * the whole lifetime.
      */
     struct mutex lock;
-    /* Indicate the program state */
-    enum vwifi_state state;
-    /* List for maintaining all interfaces */
-    struct list_head vif_list;
-    /* List for maintaining multiple AP */
-    struct list_head ap_list;
+    enum vwifi_state state;    /**< indicate the program state */
+    struct list_head vif_list; /**< maintaining all interfaces */
+    struct list_head ap_list;  /**< maintaining multiple AP */
 };
 
 /* SME stands for "station management entity" */
 enum sme_state { SME_DISCONNECTED, SME_CONNECTING, SME_CONNECTED };
 
-/* Virtual interface which is pointed by netdev_priv(). Fields in the
- * structure are interface-dependent.
- * Every interface owns a owl_vif, no matter the interface mode
- * (STA, AP, Ad-hoc...).
+/* Virtual interface pointed to by netdev_priv(). Fields in the structure are
+ * interface-dependent. Every interface has its own owl_vif, regardless of the
+ * interface mode (STA, AP, Ad-hoc...).
  */
 struct owl_vif {
     struct wireless_dev wdev;
@@ -64,11 +60,10 @@ struct owl_vif {
     u8 bssid[ETH_ALEN];
     u8 ssid[IEEE80211_MAX_SSID_LEN];
 
-    /* Head of received packet queue */
-    struct list_head rx_queue;
+    struct list_head rx_queue; /**< Head of received packet queue */
     /* Store all owl_vif which is in the same BSS (AP will be the head). */
     struct list_head bss_list;
-    /* List entry for maintaining all owl_vif, which can be access via
+    /* List entry for maintaining all owl_vif, which can be accessed via
      * owl->vif_list.
      */
     struct list_head list;
@@ -84,9 +79,9 @@ struct owl_vif {
 
             struct cfg80211_scan_request *scan_request;
             enum sme_state sme_state; /* connection information */
-            unsigned long
-                conn_time; /* last connection time to a AP (in jiffies) */
-            unsigned long active_time; /* last tx/rx time (in jiffies) */
+            /* last connection time to a AP (in jiffies) */
+            unsigned long conn_time;
+            unsigned long active_time; /**< last tx/rx time (in jiffies) */
             u16 disconnect_reason_code;
 
             struct timer_list scan_timeout;
@@ -128,15 +123,16 @@ static inline struct owl_vif *wdev_get_owl_vif(struct wireless_dev *wdev)
 
 #define SIN_S3_MIN (-(1 << 12))
 #define SIN_S3_MAX (1 << 12)
+
 /* A sine approximation via a third-order approx.
- * https://www.coranac.com/2009/07/sines explain the
- * details about the magic inside this function. I adjusted
- * some parameter to make the frequency of the sine function
- * larger.
- * __sin_s3() is for internal use of rand_int_smooth(), never
- * call this function elsewhere.
+ * Refer to https://www.coranac.com/2009/07/sines for details about the
+ * algorithm. Some parameters have been adjusted to increase the frequency
+ * of the sine function.
+ * Note: __sin_s3() is intended for internal use by rand_int_smooth() and
+ * should not be called elsewhere.
+ *
  * @x: seed to generate third-order sine value
- * @return: signed 32-bit integer ranging from SIN_S3_MIN ~ SIN_S3_MAX
+ * @return: signed 32-bit integer ranging from SIN_S3_MIN to SIN_S3_MAX
  */
 static inline s32 __sin_s3(s32 x)
 {
@@ -156,9 +152,9 @@ static inline s32 __sin_s3(s32 x)
     return (x * ((3 << p) - ((x * x) >> r))) >> s;
 }
 
-/* Generate a signed 32-bit integer by feeding seed into
- * __sin_s3(). It's closer to a sine function if you plot
- * the distribution of (seed, rand_int_smmoth()).
+/* Generate a signed 32-bit integer by feeding the seed into __sin_s3().
+ * The distribution of (seed, rand_int_smooth()) is closer to a sine function
+ * when plotted.
  */
 static inline s32 rand_int_smooth(s32 low, s32 up, s32 seed)
 {
@@ -168,9 +164,9 @@ static inline s32 rand_int_smooth(s32 low, s32 up, s32 seed)
     return result;
 }
 
-/* Helper function that will prepare structure with self-defined BSS information
- * and "inform" the kernel about "new" BSS Most of the code are copied from the
- * upcoming inform_dummy_bss function.
+/* Helper function that prepares a structure with self-defined BSS information
+ * and "informs" the kernel about the "new" BSS. Most of the code is copied from
+ * the upcoming inform_dummy_bss function.
  */
 static void inform_bss(struct owl_vif *vif)
 {
@@ -193,10 +189,11 @@ static void inform_bss(struct owl_vif *vif)
         ie[1] = ap->ssid_len;
         memcpy(ie + 2, ap->ssid, ap->ssid_len);
 
-        /* Using CLOCK_BOOTTIME clock, which won't be affected by
-         * changes in system time-of-day clock, and includes any time
-         * that the system is suspended. Thus, it's suitable for
-         * tsf to synchronize the machines in BSS.
+        /* Using the CLOCK_BOOTTIME clock, which remains unaffected by changes
+         * in the system time-of-day clock and includes any time that the
+         * system is suspended.
+         * This clock is suitable for synchronizing the machines in the BSS
+         * using tsf.
          */
         u64 tsf = div_u64(ktime_get_boottime_ns(), 1000);
 
@@ -240,25 +237,24 @@ static struct net_device_stats *owl_ndo_get_stats(struct net_device *dev)
 static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
                                       struct net_device *dev);
 
-/* Receive a packet: retrieve, encapsulate to skb, then do the following
- * stuff based on the interface mode:
- * STA mode: pass the skb to upper level (protocol stack).
- * AP mode: do the following stuff based on the packet type:
- *      1. unicast: if the skb is for another STA, then pass it
- *                  to the STA and do not pass to protocol stack,
- *                  otherwise (skb is for AP itself) pass it to
- *                  protocol stack.
- *      2. broadcast: pass skb to another STA except the source STA,
- *                    then pass it to protocol stack.
- *      3. multicast: do the same thing as broadcast.
+/* Receive a packet: retrieve, encapsulate it in an skb, and perform the
+ * following operations based on the interface mode:
+ *   - STA mode: Pass the skb to the upper level (protocol stack).
+ *   - AP mode: Perform the following operations based on the packet type:
+ *     1. Unicast: If the skb is intended for another STA, pass it to that
+ *        STA and do not pass it to the protocol stack. If the skb is intended
+ *        for the AP itself, pass it to the protocol stack.
+ *     2. Broadcast: Pass the skb to all other STAs except the source STA, and
+ *        then pass it to the protocol stack.
+ *     3. Multicast: Perform the same operations as for broadcast.
  */
 static void owl_rx(struct net_device *dev)
 {
     struct owl_vif *vif = ndev_get_owl_vif(dev);
-    /* skb: socket buffer will be sended to protocol stack.
-     * skb1: socket buffer will be transmitted to another STA.
-     */
-    struct sk_buff *skb, *skb1 = NULL;
+    /* socket buffer will be sended to protocol stack */
+    struct sk_buff *skb;
+    /* socket buffer will be transmitted to another STA */
+    struct sk_buff *skb1 = NULL;
     struct owl_packet *pkt;
 
     if (list_empty(&vif->rx_queue)) {
@@ -393,7 +389,6 @@ static int __owl_ndo_start_xmit(struct owl_vif *vif,
                 eth_hdr->h_source);
     }
 
-
     /* Directly send to rx_queue, simulate the rx interrupt */
     owl_rx(dest_vif->ndev);
 
@@ -407,7 +402,7 @@ error_before_rx_queue:
 }
 
 /* Network packet transmit.
- * Callback called by the kernel when packets should be sent.
+ * Callback called by the kernel when packets need to be sent.
  */
 static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
                                       struct net_device *dev)
@@ -514,20 +509,21 @@ static void owl_scan_timeout(struct timer_list *t)
         schedule_work(&vif->ws_scan_timeout);
 }
 
-/* "Scan routine". It simulates a fake BSS scan (In fact, do nothing.), and sets
- * a scan timer to start from then. Once the timer timeouts, the timeout
- * routine owl_scan_timeout() will be invoked, which schedules a timeout work,
- * and the timeout work will inform the kernel about "dummy" BSS and finish the
- * scan.
+/* Scan routine. It simulates a fake BSS scan (in fact, it does nothing) and
+ * sets a scan timer to start from then. Once the timer timeouts, the timeout
+ * routine owl_scan_timeout() will be invoked. This routine schedules a timeout
+ * work that informs the kernel about the "dummy" BSS and completes the scan.
  */
 static void owl_scan_routine(struct work_struct *w)
 {
     struct owl_vif *vif = container_of(w, struct owl_vif, ws_scan);
 
-    /* In real world driver, we scan BSS here. But viwifi doesn't, because we
-     * already store dummy BSS in ssid hash table. So we just set a scan timeout
-     * after specific jiffies, and inform "dummy" BSS to kernel and call
-     * cfg80211_scan_done() by timeout worker.
+    /* In a real-world driver, BSS scanning would occur here. However, in the
+     * case of viwifi, scanning is not performed because dummy BSS entries are
+     * already stored in the SSID hash table. Instead, a scan timeout is set
+     * after a specific number of jiffies. The timeout worker informs the
+     * kernel about the "dummy" BSS and calls cfg80211_scan_done() to complete
+     * the scan.
      */
     mod_timer(&vif->scan_timeout, jiffies + msecs_to_jiffies(SCAN_TIMEOUT_MS));
 }
@@ -715,12 +711,11 @@ static int owl_disconnect(struct wiphy *wiphy,
     return 0;
 }
 
-/* Callback called by kernel when user decided to get
- * informations of a specific station. The informations
- * include numbers and bytes of tx/rx, signal, and
- * timing informations (inactive time and elapsed time since
- * the last connection to an AP).
- * Called when rtnl lock was acquired.
+/* Callback called by the kernel when the user requests information about
+ * a specific station. The information includes the number and bytes of
+ * transmitted and received packets, signal strength, and timing information
+ * such as inactive time and elapsed time since the last connection to an AP.
+ * This callback is invoked when the rtnl lock has been acquired.
  */
 static int owl_get_station(struct wiphy *wiphy,
                            struct net_device *dev,
@@ -759,9 +754,9 @@ static int owl_get_station(struct wiphy *wiphy,
     return 0;
 }
 
-/* Create a virtual interface, which owns a wiphy which is not shared
- * with other interfaces. Interface mode is set to STA mode, who wants
- * to change the interface type should call change_virtual_intf().
+/* Create a virtual interface that has its own wiphy, not shared with other
+ * interfaces. The interface mode is set to STA mode. To change the interface
+ * type, use the change_virtual_intf() function.
  */
 static struct wireless_dev *owinterface_add(struct wiphy *wiphy, int if_idx)
 {
@@ -870,9 +865,9 @@ static int owl_change_iface(struct wiphy *wiphy,
     return 0;
 }
 
-/* Called by the kernel when user want to create an Access Point. Now
- * it just add a ssid to the ssid_table to emulate the AP signal. And
- * record the ssid to the owl_context.
+/* Called by the kernel when the user wants to create an Access Point.
+ * Currently, it adds an SSID to the SSID table to emulate the AP signal and
+ * records the SSID in the owl_context.
  */
 static int owl_start_ap(struct wiphy *wiphy,
                         struct net_device *ndev,
@@ -908,8 +903,8 @@ static int owl_start_ap(struct wiphy *wiphy,
     return 0;
 }
 
-/* Called by the kernel when there is need to "stop" from AP mode.
- * It uses the ssid to remove the AP node of ssid_stable.
+/* Called by the kernel when there is a need to "stop" from AP mode. It uses
+ * the SSID to remove the AP node from the SSID table.
  */
 static int owl_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
 {
@@ -985,11 +980,11 @@ static int owl_delete_interface(struct owl_vif *vif)
     return 0;
 }
 
-/* Structure of functions for FullMAC 80211 drivers.
- * Functions implemented along with fields/flags in wiphy structure would
- * represent drivers features. This module can only perform "scan" and
- * "connect". Some functions cant be implemented alone, for example: with
- * "connect" there is should be function "disconnect".
+/* Structure of functions for FullMAC 80211 drivers. Functions implemented
+ * along with fields/flags in the wiphy structure represent driver features.
+ * This module can only perform "scan" and "connect". Some functions cannot
+ * be implemented alone. For example, with "connect" there should be a
+ * corresponding "disconnect" function.
  */
 static struct cfg80211_ops owl_cfg_ops = {
     .change_virtual_intf = owl_change_iface,
@@ -1058,10 +1053,10 @@ static void owl_free(void)
 }
 
 /* Allocate and register wiphy.
- * Virtual interfaces should be created by nl80211, which will
- * call cfg80211_ops->add_iface(). This program create a wiphy
- * for every virtual interface, which means an virtual interface
- * has an physical (virtual) adapter under it.
+ * Virtual interfaces should be created by nl80211, which will call
+ * cfg80211_ops->add_iface(). This program creates a wiphy for every
+ * virtual interface, which means a virtual interface has a physical (virtual)
+ * adapter associated with it.
  */
 static struct wiphy *owcfg80211_add(void)
 {
