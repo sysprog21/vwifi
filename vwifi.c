@@ -367,14 +367,14 @@ static int __owl_ndo_start_xmit(struct owl_vif *vif,
 
     /* enqueue packet to destination vif's rx_queue */
     if (mutex_lock_interruptible(&dest_vif->lock))
-        goto l_error_before_rx_queue;
+        goto error_before_rx_queue;
 
     list_add_tail(&pkt->list, &dest_vif->rx_queue);
 
     mutex_unlock(&dest_vif->lock);
 
     if (mutex_lock_interruptible(&vif->lock))
-        goto l_erorr_after_rx_queue;
+        goto erorr_after_rx_queue;
 
     /* Update interface statistics */
     vif->stats.tx_packets++;
@@ -399,9 +399,9 @@ static int __owl_ndo_start_xmit(struct owl_vif *vif,
 
     return datalen;
 
-l_erorr_after_rx_queue:
+erorr_after_rx_queue:
     list_del(&pkt->list);
-l_error_before_rx_queue:
+error_before_rx_queue:
     kfree(pkt);
     return 0;
 }
@@ -763,7 +763,7 @@ static int owl_get_station(struct wiphy *wiphy,
  * with other interfaces. Interface mode is set to STA mode, who wants
  * to change the interface type should call change_virtual_intf().
  */
-static struct wireless_dev *owl_interface_add(struct wiphy *wiphy, int if_idx)
+static struct wireless_dev *owinterface_add(struct wiphy *wiphy, int if_idx)
 {
     struct net_device *ndev = NULL;
     struct owl_vif *vif = NULL;
@@ -773,7 +773,7 @@ static struct wireless_dev *owl_interface_add(struct wiphy *wiphy, int if_idx)
                         ether_setup);
 
     if (!ndev)
-        goto l_error_alloc_ndev;
+        goto error_alloc_ndev;
 
     /* fill private data of network context. */
     vif = ndev_get_owl_vif(ndev);
@@ -807,7 +807,7 @@ static struct wireless_dev *owl_interface_add(struct wiphy *wiphy, int if_idx)
      * ff:ff:ff:ff:ff:ff
      */
     if (register_netdev(vif->ndev))
-        goto l_error_ndev_register;
+        goto error_ndev_register;
 
     /* Initialize connection information */
     memset(vif->bssid, 0, ETH_ALEN);
@@ -835,17 +835,17 @@ static struct wireless_dev *owl_interface_add(struct wiphy *wiphy, int if_idx)
 
     /* Add vif into global vif_list */
     if (mutex_lock_interruptible(&owl->lock))
-        goto l_error_add_list;
+        goto error_add_list;
     list_add_tail(&vif->list, &owl->vif_list);
     mutex_unlock(&owl->lock);
 
     return &vif->wdev;
 
-l_error_add_list:
+error_add_list:
     unregister_netdev(vif->ndev);
-l_error_ndev_register:
+error_ndev_register:
     free_netdev(vif->ndev);
-l_error_alloc_ndev:
+error_alloc_ndev:
     wiphy_unregister(wiphy);
     wiphy_free(wiphy);
     return NULL;
@@ -958,9 +958,7 @@ static int owl_delete_interface(struct owl_vif *vif)
         }
         /* If there's a pending scan, call cfg80211_scan_done to finish it. */
         if (vif->scan_request) {
-            struct cfg80211_scan_info info = {
-                .aborted = true,
-            };
+            struct cfg80211_scan_info info = {.aborted = true};
 
             cfg80211_scan_done(vif->scan_request, &info);
             vif->scan_request = NULL;
@@ -1065,7 +1063,7 @@ static void owl_free(void)
  * for every virtual interface, which means an virtual interface
  * has an physical (virtual) adapter under it.
  */
-static struct wiphy *owl_cfg80211_add(void)
+static struct wiphy *owcfg80211_add(void)
 {
     struct wiphy *wiphy = NULL;
 
@@ -1117,12 +1115,12 @@ static struct wiphy *owl_cfg80211_add(void)
      */
     if (wiphy_register(wiphy) < 0) {
         pr_info("couldn't register wiphy device\n");
-        goto l_error_wiphy_register;
+        goto error_wiphy_register;
     }
 
     return wiphy;
 
-l_error_wiphy_register:
+error_wiphy_register:
     wiphy_free(wiphy);
     return NULL;
 }
@@ -1140,19 +1138,20 @@ static int __init vwifi_init(void)
     INIT_LIST_HEAD(&owl->ap_list);
 
     for (int i = 0; i < station; i++) {
-        struct wiphy *wiphy = owl_cfg80211_add();
+        struct wiphy *wiphy = owcfg80211_add();
         if (!wiphy)
-            goto l_cfg80211_add;
-        if (!owl_interface_add(wiphy, i))
-            goto l_interface_add;
+            goto cfg80211_add;
+        if (!owinterface_add(wiphy, i))
+            goto interface_add;
     }
 
     owl->state = OWL_READY;
 
     return 0;
 
-l_interface_add:
-l_cfg80211_add:
+interface_add:
+    /* FIXME: check for resource deallocation */
+cfg80211_add:
     owl_free();
     return -1;
 }
