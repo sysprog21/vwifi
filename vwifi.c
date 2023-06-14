@@ -720,7 +720,29 @@ static int owl_get_station(struct wiphy *wiphy,
 {
     struct owl_vif *vif = ndev_get_owl_vif(dev);
 
-    if (memcmp(mac, vif->bssid, ETH_ALEN))
+    bool found_sta = false;
+    switch (dev->ieee80211_ptr->iftype) {
+    case NL80211_IFTYPE_AP:;
+        struct owl_vif *sta_vif = NULL;
+        list_for_each_entry (sta_vif, &vif->bss_list, bss_list) {
+            if (!memcmp(mac, sta_vif->ndev->dev_addr, ETH_ALEN)) {
+                found_sta = true;
+                break;
+            }
+        }
+        if (!memcmp(mac, sta_vif->ndev->dev_addr, ETH_ALEN))
+            found_sta = true;
+        break;
+    case NL80211_IFTYPE_STATION:
+        if (!memcmp(mac, vif->bssid, ETH_ALEN))
+            found_sta = true;
+        break;
+    default:
+        pr_info("owl: invalid interface type %u\n", dev->ieee80211_ptr->iftype);
+        return -EINVAL;
+    }
+
+    if (!found_sta)
         return -ENONET;
 
     sinfo->filled = BIT_ULL(NL80211_STA_INFO_TX_PACKETS) |
