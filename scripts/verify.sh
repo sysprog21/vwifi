@@ -162,6 +162,18 @@ if [ $final_ret -eq 0 ]; then
     if [ $plot_rc -ne 0 ]; then
         final_ret=9
     fi
+
+    # TestAP performs station dump
+    sudo ip netns exec ns0 iw dev owl0 station dump > station_dump_result.log
+    for num in {1..2}; do  
+        cat station_dump_result.log | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| sed -n "${num}p" > dump_ssid.log
+        sudo ip netns exec "ns${num}" iw dev | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > station_ssid.log
+        DIFF=$(diff dump_ssid.log station_ssid.log)
+        if [ "$DIFF" != "" ]; then
+            final_ret=10
+            break
+        fi
+    done
 fi
 
 if [ $final_ret -eq 0 ]; then
@@ -170,7 +182,7 @@ if [ $final_ret -eq 0 ]; then
     sudo ip netns del ns0
     sudo ip netns del ns1
     sudo ip netns del ns2
-    rm scan_result.log scan_bssid.log connected.log device.log rssi.txt 
+    rm scan_result.log scan_bssid.log connected.log device.log rssi.txt station_dump_result.log dump_ssid.log station_ssid.log
     echo "==== Test PASSED ===="
     exit 0
 fi
