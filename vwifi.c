@@ -772,6 +772,38 @@ static int owl_get_station(struct wiphy *wiphy,
     return 0;
 }
 
+/* dump station callback -- resume dump at index @idx */
+static int owl_dump_station(struct wiphy *wiphy,
+                            struct net_device *dev,
+                            int idx,
+                            u8 *mac,
+                            struct station_info *sinfo)
+{
+    struct owl_vif *ap_vif = ndev_get_owl_vif(dev);
+
+    pr_info("Dump station at the idx %d\n", idx);
+
+    int ret = -ENONET;
+    struct owl_vif *sta_vif = NULL;
+    int i = 0;
+
+    list_for_each_entry (sta_vif, &ap_vif->bss_list, bss_list) {
+        if (i < idx) {
+            ++i;
+            continue;
+        }
+        break;
+    }
+
+    if (sta_vif == ap_vif)
+        return ret;
+
+    ret = 0;
+
+    memcpy(mac, sta_vif->ndev->dev_addr, ETH_ALEN);
+    return owl_get_station(wiphy, dev, mac, sinfo);
+}
+
 /* Create a virtual interface that has its own wiphy, not shared with other
  * interfaces. The interface mode is set to STA mode. To change the interface
  * type, use the change_virtual_intf() function.
@@ -1011,6 +1043,7 @@ static struct cfg80211_ops owl_cfg_ops = {
     .connect = owl_connect,
     .disconnect = owl_disconnect,
     .get_station = owl_get_station,
+    .dump_station = owl_dump_station,
     .start_ap = owl_start_ap,
     .stop_ap = owl_stop_ap,
 };
