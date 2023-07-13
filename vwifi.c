@@ -957,7 +957,13 @@ static int owl_start_ap(struct wiphy *wiphy,
 /* Called by the kernel when there is a need to "stop" from AP mode. It uses
  * the SSID to remove the AP node from the SSID table.
  */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2)
+static int owl_stop_ap(struct wiphy *wiphy,
+                       struct net_device *ndev,
+                       unsigned int link_id)
+#else
 static int owl_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
+#endif
 {
     struct owl_vif *vif = ndev_get_owl_vif(ndev);
     struct owl_vif *pos = NULL, *safe = NULL;
@@ -991,7 +997,11 @@ static int owl_delete_interface(struct owl_vif *vif)
 
 
     if (vif->wdev.iftype == NL80211_IFTYPE_AP) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2)
+        owl_stop_ap(wiphy, vif->ndev, 0);
+#else
         owl_stop_ap(wiphy, vif->ndev);
+#endif
     } else if (vif->wdev.iftype == NL80211_IFTYPE_STATION) {
         if (mutex_lock_interruptible(&vif->lock))
             return -ERESTARTSYS;
