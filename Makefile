@@ -6,10 +6,10 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 GIT_HOOKS := .git/hooks/applied
 
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(shell pwd) modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(shell pwd) clean
 
 check: all
 	@scripts/verify.sh
