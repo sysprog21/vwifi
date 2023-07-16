@@ -14,9 +14,24 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 #define NAME_PREFIX "owl"
 #define NDEV_NAME NAME_PREFIX "%d"
 
+#define DOT11_MGMT_HDR_LEN 24      /* d11 management header len */
+#define DOT11_BCN_PRB_FIXED_LEN 12 /* beacon/probe fixed length */
+
 #define MAX_PROBED_SSIDS 69
+#define IE_MAX_LEN 512
 
 #define SCAN_TIMEOUT_MS 100 /*< millisecond */
+
+/* Note: owl_cipher_suites is an array of int defining which cipher suites
+ * are supported. A pointer to this array and the number of entries is passed
+ * on to upper layers.
+ */
+static const u32 owl_cipher_suites[] = {
+    WLAN_CIPHER_SUITE_WEP40,
+    WLAN_CIPHER_SUITE_WEP104,
+    WLAN_CIPHER_SUITE_TKIP,
+    WLAN_CIPHER_SUITE_CCMP,
+};
 
 struct owl_packet {
     int datalen;
@@ -91,12 +106,16 @@ struct owl_vif {
         /* Structure for AP mode */
         struct {
             bool ap_enabled;
+            bool privacy;
             /* List node for storing AP (owl->ap_list is the head),
              * this field is for interface in AP mode.
              */
             struct list_head ap_list;
         };
     };
+
+    u32 beacon_ie_len;
+    u8 beacon_ie[IE_MAX_LEN];
 };
 
 static int station = 2;
@@ -177,14 +196,15 @@ static void inform_bss(struct owl_vif *vif)
             .scan_width = NL80211_BSS_CHAN_WIDTH_20,
             .signal = DBM_TO_MBM(rand_int_smooth(-100, -30, jiffies)),
         };
+        int capability = WLAN_CAPABILITY_ESS;
+
+        if (ap->privacy)
+            capability |= WLAN_CAPABILITY_PRIVACY;
 
         pr_info("owl: %s performs scan, found %s (SSID: %s, BSSID: %pM)\n",
                 vif->ndev->name, ap->ndev->name, ap->ssid, ap->bssid);
-
-        u8 *ie = kmalloc(ap->ssid_len + 2, GFP_KERNEL);
-        ie[0] = WLAN_EID_SSID;
-        ie[1] = ap->ssid_len;
-        memcpy(ie + 2, ap->ssid, ap->ssid_len);
+        pr_info("cap = %d, beacon_ie_len = %d\n", capability,
+                ap->beacon_ie_len);
 
         /* Using the CLOCK_BOOTTIME clock, which remains unaffected by changes
          * in the system time-of-day clock and includes any time that the
@@ -197,13 +217,12 @@ static void inform_bss(struct owl_vif *vif)
         /* It is posible to use cfg80211_inform_bss() instead. */
         bss = cfg80211_inform_bss_data(
             vif->wdev.wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, ap->bssid, tsf,
-            WLAN_CAPABILITY_ESS, 100, ie, ap->ssid_len + 2, GFP_KERNEL);
+            capability, 100, ap->beacon_ie, ap->beacon_ie_len, GFP_KERNEL);
 
         /* cfg80211_inform_bss_data() returns cfg80211_bss structure referefence
          * counter of which should be decremented if it is unused.
          */
         cfg80211_put_bss(vif->wdev.wiphy, bss);
-        kfree(ie);
     }
 }
 
@@ -528,6 +547,7 @@ static void owl_connect_routine(struct work_struct *w)
 {
     struct owl_vif *vif = container_of(w, struct owl_vif, ws_connect);
     struct owl_vif *ap = NULL;
+    struct station_info *sinfo;
 
     if (mutex_lock_interruptible(&vif->lock))
         return;
@@ -537,10 +557,36 @@ static void owl_connect_routine(struct work_struct *w)
         if (!memcmp(ap->ssid, vif->req_ssid, ap->ssid_len)) {
             pr_info("owl: %s is connected to AP %s (SSID: %s, BSSID: %pM)\n",
                     vif->ndev->name, ap->ndev->name, ap->ssid, ap->bssid);
-            /* It is possible to use cfg80211_connect_result() or
-             * cfg80211_connect_done()
+
+            if (mutex_lock_interruptible(&ap->lock))
+                return;
+
+            /* AP connection part */
+            sinfo = kmalloc(sizeof(struct station_info), GFP_KERNEL);
+            if (!sinfo)
+                return;
+
+            /* It is safe that we fake the association request IEs
+             * by beacon IEs, since they both possibly have the WPA/RSN IE
+             * which is what the upper user-space program (e.g. hostapd)
+             * cares about.
              */
-            cfg80211_connect_result(vif->ndev, NULL, NULL, 0, NULL, 0,
+            sinfo->assoc_req_ies = ap->beacon_ie;
+            sinfo->assoc_req_ies_len = ap->beacon_ie_len;
+
+            list_add_tail(&vif->bss_list, &ap->bss_list);
+
+            /* nl80211 will inform the user-space program (e.g. hostapd)
+             * about the newly-associated station via generic netlink
+             * command NL80211_CMD_NEW_STATION for latter processing
+             * (e.g. 4-way handshake).
+             */
+            cfg80211_new_sta(ap->ndev, vif->ndev->dev_addr, sinfo, GFP_KERNEL);
+
+            mutex_unlock(&ap->lock);
+
+            /* STA conneciton part */
+            cfg80211_connect_result(vif->ndev, ap->bssid, NULL, 0, NULL, 0,
                                     WLAN_STATUS_SUCCESS, GFP_KERNEL);
             memcpy(vif->ssid, ap->ssid, ap->ssid_len);
             memcpy(vif->bssid, ap->bssid, ETH_ALEN);
@@ -548,14 +594,9 @@ static void owl_connect_routine(struct work_struct *w)
             vif->conn_time = jiffies;
             vif->ap = ap;
 
-            if (mutex_lock_interruptible(&ap->lock))
-                return;
-
-            /* Add STA to bss_list, and the head is AP */
-            list_add_tail(&vif->bss_list, &ap->bss_list);
-            mutex_unlock(&ap->lock);
-
             mutex_unlock(&vif->lock);
+
+            kfree(sinfo);
 
             return;
         }
@@ -586,19 +627,24 @@ static void owl_disconnect_routine(struct work_struct *w)
     if (mutex_lock_interruptible(&vif->lock))
         return;
 
+    /* STA cleanup stuff */
     cfg80211_disconnected(vif->ndev, vif->disconnect_reason_code, NULL, 0, true,
                           GFP_KERNEL);
+
     vif->disconnect_reason_code = 0;
     vif->sme_state = SME_DISCONNECTED;
 
+    /* AP cleanup stuff */
     if (owl->state != OWL_SHUTDOWN) {
         if (mutex_lock_interruptible(&vif->ap->lock)) {
             mutex_unlock(&vif->lock);
             return;
         }
 
-        if (vif->ap->ap_enabled && !list_empty(&vif->bss_list))
+        if (vif->ap->ap_enabled && !list_empty(&vif->bss_list)) {
+            cfg80211_del_sta(vif->ap->ndev, vif->ndev->dev_addr, GFP_KERNEL);
             list_del(&vif->bss_list);
+        }
 
         mutex_unlock(&vif->ap->lock);
 
@@ -925,6 +971,8 @@ static int owl_start_ap(struct wiphy *wiphy,
                         struct cfg80211_ap_settings *settings)
 {
     struct owl_vif *vif = ndev_get_owl_vif(ndev);
+    int ie_offset = DOT11_MGMT_HDR_LEN + DOT11_BCN_PRB_FIXED_LEN;
+    int head_ie_len, tail_ie_len;
 
     pr_info("owl: %s start acting in AP mode.\n", ndev->name);
     pr_info("ctrlchn=%d, center=%d, bw=%d, beacon_interval=%d, dtim_period=%d,",
@@ -950,6 +998,32 @@ static int owl_start_ap(struct wiphy *wiphy,
     list_add_tail(&vif->ap_list, &owl->ap_list);
 
     vif->ap_enabled = true;
+
+    vif->privacy = settings->privacy;
+
+    /* cfg80211 and some upper user-space programs treat IEs as two-part:
+     * 1. head: 802.11 beacon frame header + beacon IEs before TIM IE
+     * 2. tail: beacon IEs after TIM IE
+     * We combine them and store them in vif->beaon_ie.
+     */
+    head_ie_len = settings->beacon.head_len - ie_offset;
+    tail_ie_len = settings->beacon.tail_len;
+
+    if (likely(head_ie_len + tail_ie_len <= IE_MAX_LEN)) {
+        vif->beacon_ie_len = head_ie_len + tail_ie_len;
+        memset(vif->beacon_ie, 0, IE_MAX_LEN);
+        memcpy(vif->beacon_ie, &settings->beacon.head[ie_offset], head_ie_len);
+        memcpy(vif->beacon_ie + head_ie_len, settings->beacon.tail,
+               tail_ie_len);
+
+        pr_info(
+            "%s: privacy = %x, head_ie_len (before TIM IE) = %d, tail_ie_len = "
+            "%d",
+            __func__, settings->privacy, head_ie_len, tail_ie_len);
+    } else {
+        pr_info("%s: IE exceed %d bytes!\n", __func__, IE_MAX_LEN);
+        return 1;
+    }
 
     return 0;
 }
@@ -986,6 +1060,96 @@ static int owl_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
 
     vif->ap_enabled = false;
 
+    return 0;
+}
+
+static int owl_change_beacon(struct wiphy *wiphy,
+                             struct net_device *ndev,
+                             struct cfg80211_beacon_data *info)
+{
+    struct owl_vif *vif = ndev_get_owl_vif(ndev);
+    int ie_offset = DOT11_MGMT_HDR_LEN + DOT11_BCN_PRB_FIXED_LEN;
+    int head_ie_len, tail_ie_len;
+
+    /* cfg80211 and some user-space programs treat IEs as two-part:
+     * 1. head: 802.11 beacon frame header + beacon IEs before TIM IE
+     * 2. tail: beacon IEs after TIM IE
+     * We combine them and store them in vif->beaon_ie.
+     */
+    head_ie_len = info->head_len - ie_offset;
+    tail_ie_len = info->tail_len;
+
+    if (likely(head_ie_len + tail_ie_len <= IE_MAX_LEN)) {
+        vif->beacon_ie_len = head_ie_len + tail_ie_len;
+        memset(vif->beacon_ie, 0, IE_MAX_LEN);
+        memcpy(vif->beacon_ie, &info->head[ie_offset], head_ie_len);
+        memcpy(vif->beacon_ie + head_ie_len, info->tail, tail_ie_len);
+
+        pr_info(
+            "%s: head_ie_len (before TIM IE) = %d, tail_ie_len = "
+            "%d",
+            __func__, head_ie_len, tail_ie_len);
+    } else {
+        pr_info("%s: IE exceed %d bytes!\n", __func__, IE_MAX_LEN);
+        return 1;
+    }
+
+    return 0;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+static int owl_add_key(struct wiphy *wiphy,
+                       struct net_device *ndev,
+                       int link_id,
+                       u8 key_idx,
+                       bool pairwise,
+                       const u8 *mac_addr,
+                       struct key_params *params)
+#else
+static int owl_add_key(struct wiphy *wiphy,
+                       struct net_device *ndev,
+                       u8 key_idx,
+                       bool pairwise,
+                       const u8 *mac_addr,
+                       struct key_params *params)
+#endif
+{
+    return 0;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+static int owl_del_key(struct wiphy *wiphy,
+                       struct net_device *ndev,
+                       int link_id,
+                       u8 key_idx,
+                       bool pairwise,
+                       const u8 *mac_addr)
+#else
+static int owl_del_key(struct wiphy *wiphy,
+                       struct net_device *ndev,
+                       u8 key_idx,
+                       bool pairwise,
+                       const u8 *mac_addr)
+#endif
+{
+    return 0;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+static int owl_set_default_key(struct wiphy *wiphy,
+                               struct net_device *ndev,
+                               int link_id,
+                               u8 key_idx,
+                               bool unicast,
+                               bool multicast)
+#else
+static int owl_set_default_key(struct wiphy *wiphy,
+                               struct net_device *ndev,
+                               u8 key_idx,
+                               bool unicast,
+                               bool multicast)
+#endif
+{
     return 0;
 }
 
@@ -1056,6 +1220,10 @@ static struct cfg80211_ops owl_cfg_ops = {
     .dump_station = owl_dump_station,
     .start_ap = owl_start_ap,
     .stop_ap = owl_stop_ap,
+    .change_beacon = owl_change_beacon,
+    .add_key = owl_add_key,
+    .del_key = owl_del_key,
+    .set_default_key = owl_set_default_key,
 };
 
 /* Macro for defining channel array */
@@ -1165,6 +1333,9 @@ static struct wiphy *owcfg80211_add(void)
     wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
 
     wiphy->flags |= WIPHY_FLAG_NETNS_OK;
+
+    wiphy->cipher_suites = owl_cipher_suites;
+    wiphy->n_cipher_suites = ARRAY_SIZE(owl_cipher_suites);
 
     /* register wiphy, if everything ok - there should be another wireless
      * device in system. use command: $ iw list

@@ -4,7 +4,7 @@
 such as scanning dummy Wi-Fi networks, connecting, and disconnecting from them.
 It is based on the [cfg80211 subsystem](https://www.kernel.org/doc/html/latest/driver-api/80211/cfg80211.html),
 which works together with FullMAC drivers.
-Currently, it supports station mode and Host AP mode.
+Currently, vwifi supports both Station Mode and Host AP Mode, and is well-equipped with WPA/WPA2 security facilities. This enables users to set up a wireless environment using vwifi, hostapd (in HostAP mode interface), and wpa_supplicant (in station mode interface).
 
 ## Prerequisite
 
@@ -29,7 +29,6 @@ $ pip3 install numpy matplotlib
 ```
 
 ## Testing environment
-
 <p align="center"><img src="assets/vwifi.png" alt="logo image" width=60%></p>
 
 The testing environment consists of **one AP and two STAs**.
@@ -88,22 +87,22 @@ $ sudo iw dev
 
 You should see something similar to the following output:
 ```
-phy#13
+phy#2
 	Interface owl2
-		ifindex 16
-		wdev 0xd00000001
+		ifindex 5
+		wdev 0x200000001
 		addr 00:6f:77:6c:32:00
 		type managed
-phy#12
+phy#1
 	Interface owl1
-		ifindex 15
-		wdev 0xc00000001
+		ifindex 4
+		wdev 0x100000001
 		addr 00:6f:77:6c:31:00
 		type managed
-phy#11
+phy#0
 	Interface owl0
-		ifindex 14
-		wdev 0xb00000001
+		ifindex 3
+		wdev 0x1
 		addr 00:6f:77:6c:30:00
 		type managed
 ```
@@ -119,7 +118,12 @@ $ sudo iw list
 
 Reference output:
 ```
-Wiphy phy13
+Wiphy phy2
+(... omit)
+Wiphy phy1
+(... omit)
+Wiphy phy0
+	wiphy index: 0
 	max # scan SSIDs: 69
 	max scan IEs length: 0 bytes
 	max # sched scan SSIDs: 0
@@ -127,6 +131,11 @@ Wiphy phy13
 	Retry short limit: 7
 	Retry long limit: 4
 	Coverage class: 0 (up to 0m)
+	Supported Ciphers:
+		* WEP40 (00-0f-ac:1)
+		* WEP104 (00-0f-ac:5)
+		* TKIP (00-0f-ac:2)
+		* CCMP-128 (00-0f-ac:4)
 	Available Antennas: TX 0 RX 0
 	Supported interface modes:
 		 * managed
@@ -137,10 +146,32 @@ Wiphy phy13
 			* 2.0 Mbps
 			* 5.5 Mbps
 			* 11.0 Mbps
+			* 6.0 Mbps
+			* 9.0 Mbps
+			* 12.0 Mbps
+			* 18.0 Mbps
+			* 24.0 Mbps
+			* 36.0 Mbps
+			* 48.0 Mbps
+			* 54.0 Mbps
 		Frequencies:
+			* 2412 MHz [1] (20.0 dBm)
+			* 2417 MHz [2] (20.0 dBm)
+			* 2422 MHz [3] (20.0 dBm)
+			* 2427 MHz [4] (20.0 dBm)
+			* 2432 MHz [5] (20.0 dBm)
 			* 2437 MHz [6] (20.0 dBm)
+			* 2442 MHz [7] (20.0 dBm)
+			* 2447 MHz [8] (20.0 dBm)
+			* 2452 MHz [9] (20.0 dBm)
+			* 2457 MHz [10] (20.0 dBm)
+			* 2462 MHz [11] (20.0 dBm)
+			* 2467 MHz [12] (20.0 dBm) (no IR)
+			* 2472 MHz [13] (20.0 dBm) (no IR)
+			* 2484 MHz [14] (20.0 dBm) (no IR)
 	Supported commands:
 		 * set_interface
+		 * new_key
 		 * start_ap
 		 * set_wiphy_netns
 		 * set_channel
@@ -153,36 +184,13 @@ Wiphy phy13
 	max scan plan interval: -1
 	max scan plan iterations: 0
 	Supported extended features:
-Wiphy phy14
-	... (omit)
-Wiphy phy15
-	... (omit)
 ```
+
+You can see the supported operating modes, supported ciphers, channels, bitrates, and supported commands in the output.
 
 The "managed mode" in the Supported interface modes is identical to station mode.
 
-### Getting Station Information
-
-To retrieve station information for `owl0`, execute the following command:
-```shell
-$ sudo iw dev owl0 station get 00:6f:77:6c:30:00
-```
-
-You should see output similar to the following:
-```
-Station 00:6f:77:6c:30:00 (on owl0)
-	inactive time:	600260 ms
-	rx bytes:	0
-	rx packets:	0
-	tx bytes:	0
-	tx packets:	0
-	tx failed:	0
-	signal:  	-33 dBm
-	current time:	1655310275763 ms
-```
-
 ### Creating Network Namespaces
-
 Next, create three network namespaces using the following commands:
 ```shell
 $ sudo ip netns add ns0
@@ -193,94 +201,105 @@ $ sudo ip netns add ns2
 Assign the three interfaces to separate network namespaces.
 Please note that the `wiphy` is placed within the network namespace, and the interface associated with that wiphy will be contained within it.
 ```shell
-$ sudo iw phy phy11 set netns name ns0
-$ sudo iw phy phy12 set netns name ns1
-$ sudo iw phy phy13 set netns name ns2
-```
-
-Then, bring up the three interfaces:
-```shell
-sudo ip netns exec ns0 ip link set owl0 up
-sudo ip netns exec ns1 ip link set owl1 up
-sudo ip netns exec ns2 ip link set owl2 up
-```
-
-Running `hostapd` based on the script `scripts/hostapd.conf`:
-```shell
-interface=owl0
-driver=nl80211
-ssid=TestAP
-channel=6
-```
-
-Make sure to run `hostapd` in the network namespace where `owl0` is located.
-Use the following command:
-```shell	
-$ sudo ip netns exec ns0 hostapd -B scripts/hostapd.conf
+$ sudo iw phy phy0 set netns name ns0
+$ sudo iw phy phy1 set netns name ns1
+$ sudo iw phy phy2 set netns name ns2
 ```
 
 ### Assigning IP Addresses to Each Interface
 
-Now, assign an IP address to each interface using the following commands:
+Now, assign an IP address to both interfaces using the following commands:
 ```shell
 $ sudo ip netns exec ns0 ip addr add 10.0.0.1/24 dev owl0
 $ sudo ip netns exec ns1 ip addr add 10.0.0.2/24 dev owl1
 $ sudo ip netns exec ns2 ip addr add 10.0.0.3/24 dev owl2
 ```
 
-### Testing Connectivity
-
-Next, ping `owl2` (10.0.0.3) from `owl1` (10.0.0.2) using the following command:
+### Running hostapd on the HostAP Mode Interface
+Prepare the following script `hostapd.conf` (you can modify the script based on your needs):
 ```shell
-$ sudo ip netns exec ns1 ping -c 1 10.0.0.3
+interface=owl0
+driver=nl80211
+debug=1
+ctrl_interface=/var/run/hostapd
+ctrl_interface_group=wheel
+channel=6
+ssid=test
+wpa=2
+wpa_passphrase=12345678
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=CCMP
 ```
 
-You should expect the ping to fail between `owl1` and `owl2`, which is normal.
-They have not connected to the AP (`owl0`) yet,
-and STAs are not allowed to communicate with each other without the intervention of the AP.
+Run `hostapd` on the interface `owl0`:
+```shell	
+$ sudo ip netns exec ns0 hostapd -i owl0 -B hostapd.conf
+```
 
-Perform a scanning operation on `owl1` using the following command:
+### Running wpa_supplicant on the Station Mode Interfaces
+Prepare the following script `wpa_supplicant.conf` (you can modify the script based on your needs):
 ```shell
-$ sudo ip netns exec ns1 iw dev owl1 scan
+network={
+    ssid="test"
+    psk="12345678"
+}
 ```
 
-You should see output similar to the following:
-```
-BSS 00:6f:77:6c:30:00(on owl1)
-	TSF: 1859697982 usec (0d, 00:30:59)
-	freq: 2437
-	beacon interval: 100 TUs
-	capability: ESS (0x0001)
-	signal: -43.00 dBm
-	last seen: 0 ms ago
-	SSID: TestAP
-```
-
-Perform the same operation for `owl2`.
-
-Connect `owl1` and `owl2` to the AP `owl0` using the following commands:
+Then run the `wpa_supplicant` on the interface `ns1` and `ns2`:
 ```shell
-$ sudo ip netns exec ns1 iw dev owl1 connect TestAP
-$ sudo ip netns exec ns2 iw dev owl2 connect TestAP
+sudo ip netns exec ns1 \
+wpa_supplicant -i owl1 -B -c wpa_supplicant.conf
+sudo ip netns exec ns2 \
+wpa_supplicant -i owl2 -B -c wpa_supplicant.conf 
 ```
 
 ### Validating the Connection
-
 To validate the connection, use the following command:
 ```shell
 $ sudo ip netns exec ns1 iw dev owl1 link
 ```
 
-Reference output:
-```shell
+The output might seem like this:
+```
 Connected to 00:6f:77:6c:30:00 (on owl1)
-	SSID: TestAP
+	SSID: test
 	freq: 2437
-	RX: 0 bytes (0 packets)
-	TX: 0 bytes (0 packets)
-	signal: -31 dBm
+	RX: 282 bytes (2 packets)
+	TX: 248 bytes (2 packets)
+	signal: -84 dBm
 ```
 
+It shows that `owl1` has connected to the BSS with BSSID `00:6f:77:6c:30:00`, which is the MAC address of `owl0`.
+
+You may also check the connection of `owl2` by the slightly changing the command above.
+
+On the other hand, we can validate all the stations conntected to `owl0` by the following commands:
+```shell
+sudo ip netns exec ns0 iw dev owl0 station dump
+```
+
+The output may seem like this:
+```shell
+Station 00:6f:77:6c:31:00 (on owl0)
+	inactive time:	5588 ms
+	rx bytes:	5366
+	rx packets:	65
+	tx bytes:	1772
+	tx packets:	18
+	tx failed:	74
+	signal:  	-57 dBm
+	current time:	1689679337171 ms
+Station 00:6f:77:6c:32:00 (on owl0)
+	inactive time:	5588 ms
+	rx bytes:	5366
+	rx packets:	65
+	tx bytes:	1772
+	tx packets:	18
+	tx failed:	74
+	signal:  	-57 dBm
+	current time:	1689679337171 ms
+```
+### Transmission/Receivement test
 Finally, we can do the ping test:
 1. To perform a ping test between two STAs (`owl1` and `owl2`), use the following command:
 ```shell
@@ -317,8 +336,6 @@ PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
 4 packets transmitted, 4 received, 0% packet loss, time 3058ms
 rtt min/avg/max/mdev = 0.054/0.141/0.342/0.117 ms
 ```
-
-To perform all the operations mentioned above, you can simply run the test script `scripts/verify.sh`.
 
 ### Optional: Monitoring Wireless Device
 
