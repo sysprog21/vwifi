@@ -890,7 +890,12 @@ static struct wireless_dev *owinterface_add(struct wiphy *wiphy, int if_idx)
      */
     char intf_name[ETH_ALEN] = {0};
     snprintf(intf_name + 1, ETH_ALEN, "%s%d", NAME_PREFIX, if_idx);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
     eth_hw_addr_set(vif->ndev, intf_name);
+#else
+    memcpy(vif->ndev->dev_addr, intf_name, ETH_ALEN);
+#endif
 
     /* register network device. If everything is ok, there should be new
      * network device: $ ip a
