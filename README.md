@@ -271,9 +271,9 @@ Connected to 00:6f:77:6c:30:00 (on owl1)
 
 It shows that `owl1` has connected to the BSS with BSSID `00:6f:77:6c:30:00`, which is the MAC address of `owl0`.
 
-You may also check the connection of `owl2` by the slightly changing the command above.
+You may also check the connection of `owl2` by slightly changing the command above.
 
-On the other hand, we can validate all the stations conntected to `owl0` by the following commands:
+On the other hand, we can validate all the stations connected to `owl0` by the following commands:
 ```shell
 sudo ip netns exec ns0 iw dev owl0 station dump
 ```
@@ -357,5 +357,5 @@ by a MIT-style license that can be found in the LICENSE file.
 * [mac80211_hwsim](https://www.kernel.org/doc/html/latest/networking/mac80211_hwsim/mac80211_hwsim.html): software simulator of 802.11 radio(s) for mac80211
 * [Emulating WLAN in Linux - part I: the 802.11 stack](https://linuxembedded.fr/2020/05/emulating-wlan-in-linux-part-i-the-80211-stack)
 * [Emulating WLAN in Linux - part II: mac80211_hwsim](https://linuxembedded.fr/2021/01/emulating-wlan-in-linux-part-ii-mac80211hwsim)
-* [virt_wifi](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/virtual/virt_wifi.c): a completet virtual wireless driver that can be used as a wrapper around Ethernet.
+* [virt_wifi](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/virtual/virt_wifi.c): a complete virtual wireless driver that can be used as a wrapper around Ethernet.
 * [vwifi](https://github.com/Raizo62/vwifi): simulate Wi-Fi (802.11) between Linux Virtual Machines.
