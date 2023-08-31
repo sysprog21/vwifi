@@ -585,7 +585,7 @@ static void owl_connect_routine(struct work_struct *w)
 
             mutex_unlock(&ap->lock);
 
-            /* STA conneciton part */
+            /* STA connection part */
             cfg80211_connect_result(vif->ndev, ap->bssid, NULL, 0, NULL, 0,
                                     WLAN_STATUS_SUCCESS, GFP_KERNEL);
             memcpy(vif->ssid, ap->ssid, ap->ssid_len);
@@ -718,7 +718,7 @@ static int owl_connect(struct wiphy *wiphy,
     return 0;
 }
 
-/* callback called by the kernel when there is need to "diconnect" from
+/* callback called by the kernel when there is need to "disconnect" from
  * currently connected network. It initializes disconnect routine through
  * work_struct and exits with 0 if everything ok. disconnect routine should
  * call cfg80211_disconnected() to inform the kernel that disconnection is
@@ -991,7 +991,7 @@ static int owl_start_ap(struct wiphy *wiphy,
     if (settings->ssid == NULL)
         return -EINVAL;
 
-    /* Seting up AP SSID and BSSID */
+    /* Setting up AP SSID and BSSID */
     vif->ssid_len = settings->ssid_len;
     memcpy(vif->ssid, settings->ssid, settings->ssid_len);
     memcpy(vif->bssid, vif->ndev->dev_addr, ETH_ALEN);
@@ -1009,7 +1009,7 @@ static int owl_start_ap(struct wiphy *wiphy,
     /* cfg80211 and some upper user-space programs treat IEs as two-part:
      * 1. head: 802.11 beacon frame header + beacon IEs before TIM IE
      * 2. tail: beacon IEs after TIM IE
-     * We combine them and store them in vif->beaon_ie.
+     * We combine them and store them in vif->beacon_ie.
      */
     head_ie_len = settings->beacon.head_len - ie_offset;
     tail_ie_len = settings->beacon.tail_len;
@@ -1079,7 +1079,7 @@ static int owl_change_beacon(struct wiphy *wiphy,
     /* cfg80211 and some user-space programs treat IEs as two-part:
      * 1. head: 802.11 beacon frame header + beacon IEs before TIM IE
      * 2. tail: beacon IEs after TIM IE
-     * We combine them and store them in vif->beaon_ie.
+     * We combine them and store them in vif->beacon_ie.
      */
     head_ie_len = info->head_len - ie_offset;
     tail_ie_len = info->tail_len;
@@ -1265,7 +1265,7 @@ static struct ieee80211_rate owl_supported_rates_2ghz[] = {
 
 /* Describes supported band of 2GHz. */
 static struct ieee80211_supported_band nf_band_2ghz = {
-    /* FIXME: add other band capabilities if nedded, such as 40 width */
+    /* FIXME: add other band capabilities if needed, such as 40 width */
     .ht_cap.cap = IEEE80211_HT_CAP_SGI_20,
     .ht_cap.ht_supported = false,
 
