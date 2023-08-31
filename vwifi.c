@@ -214,12 +214,12 @@ static void inform_bss(struct owl_vif *vif)
          */
         u64 tsf = div_u64(ktime_get_boottime_ns(), 1000);
 
-        /* It is posible to use cfg80211_inform_bss() instead. */
+        /* It is possible to use cfg80211_inform_bss() instead. */
         bss = cfg80211_inform_bss_data(
             vif->wdev.wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, ap->bssid, tsf,
             capability, 100, ap->beacon_ie, ap->beacon_ie_len, GFP_KERNEL);
 
-        /* cfg80211_inform_bss_data() returns cfg80211_bss structure referefence
+        /* cfg80211_inform_bss_data() returns cfg80211_bss structure reference
          * counter of which should be decremented if it is unused.
          */
         cfg80211_put_bss(vif->wdev.wiphy, bss);
