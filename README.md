@@ -1,12 +1,17 @@
 # vwifi: A Simple Virtual Wireless Driver for Linux
 
-`vwifi` implements a minimal interface to achieve basic functionalities,
-such as scanning dummy Wi-Fi networks, connecting, and disconnecting from them.
-It is based on the [cfg80211 subsystem](https://www.kernel.org/doc/html/latest/driver-api/80211/cfg80211.html),
-which works together with FullMAC drivers.
-Currently, vwifi supports both Station Mode and Host AP Mode, and is well-equipped with WPA/WPA2 security facilities. This enables users to set up a wireless environment using vwifi, hostapd (in HostAP mode interface), and wpa_supplicant (in station mode interface).
+`vwifi` implements a minimal interface to provide essential functionalities,
+such as scanning for dummy Wi-Fi networks, establishing connections, and
+disconnecting from them.
 
-Furthermore, when running on hypervisors like Qemu, `vwifi` becomes a `virtio-net` driver and has the capability to do inter-guest communication. To test `vwifi` with the virtio feature, [click here](#Testing-environment-(virtio)) to jump to the virtio section below.
+It is built upon the [cfg80211 subsystem](https://www.kernel.org/doc/html/latest/driver-api/80211/cfg80211.html),
+which collaborates with FullMAC drivers. Currently, `vwifi` supports both
+Station Mode and Host AP Mode and is equipped with robust WPA/WPA2 security
+features. This enables users to configure a wireless environment using `vwifi`,
+`hostapd` (in HostAP mode interface), and `wpa_supplicant` (in station mode interface).
+
+Moreover, when running on hypervisors like QEMU, `vwifi` functions as a virtio-net
+driver, allowing for inter-guest communication.
 
 ## Prerequisite
 
@@ -219,7 +224,7 @@ $ sudo ip netns exec ns2 ip addr add 10.0.0.3/24 dev owl2
 
 ### Running hostapd on the HostAP Mode Interface
 Prepare the following script `hostapd.conf` (you can modify the script based on your needs):
-```shell
+```
 interface=owl0
 driver=nl80211
 debug=1
@@ -238,7 +243,7 @@ Run `hostapd` on the interface `owl0`:
 $ sudo ip netns exec ns0 hostapd -i owl0 -B hostapd.conf
 ```
 
-### Running wpa_supplicant on the Station Mode Interfaces
+### Running `wpa_supplicant` on the Station Mode Interfaces
 Prepare the following script `wpa_supplicant.conf` (you can modify the script based on your needs):
 ```shell
 network={
@@ -249,10 +254,10 @@ network={
 
 Then run the `wpa_supplicant` on the interface `ns1` and `ns2`:
 ```shell
-sudo ip netns exec ns1 \
-wpa_supplicant -i owl1 -B -c wpa_supplicant.conf
-sudo ip netns exec ns2 \
-wpa_supplicant -i owl2 -B -c wpa_supplicant.conf 
+$ sudo ip netns exec ns1 \
+       wpa_supplicant -i owl1 -B -c wpa_supplicant.conf
+$ sudo ip netns exec ns2 \
+      wpa_supplicant -i owl2 -B -c wpa_supplicant.conf 
 ```
 
 ### Validating the Connection
@@ -281,7 +286,7 @@ sudo ip netns exec ns0 iw dev owl0 station dump
 ```
 
 The output may seem like this:
-```shell
+```
 Station 00:6f:77:6c:31:00 (on owl0)
 	inactive time:	5588 ms
 	rx bytes:	5366
@@ -301,6 +306,7 @@ Station 00:6f:77:6c:32:00 (on owl0)
 	signal:  	-57 dBm
 	current time:	1689679337171 ms
 ```
+
 ### Transmission/Receivement test
 Finally, we can do the ping test:
 1. To perform a ping test between two STAs (`owl1` and `owl2`), use the following command:
@@ -342,12 +348,21 @@ rtt min/avg/max/mdev = 0.054/0.141/0.342/0.117 ms
 ## Testing environment (virtio)
 Below is our testing environment with virtio feature:
 
-<p align="center"><img src="assets/vwifi_virtio_arch.drawio.png" alt="vwifi virtio image" width=60%></p>
+<p align="center"><img src="assets/virtio.png" alt="vwifi virtio image" width=60%></p>
 
-vwifi makes use of the `virtio-net` device, Linux tap device, and Linux bridge device to fulfill inter-guest communication.
-In our testing environment, on the host side, we create three `tap` devices and one `bridge` device, then attach each `tap` device to the `bridge` device. And we create three VMs by `Qemu` with the `virtio-net` devices and specify that every `virtio-net` device connects to a `tap` device in the host.
-In VM1, the network interface created by `vwifi` will be in HostAP mode, with the user program `hostapd` running on top of it.
-In VM2 and VM3, we have an STA mode interface and `wpa_supplicant` running on top of it.
+`vwifi` utilizes the virtio-net device, the Linux tap device, and the Linux
+bridge device to enable inter-guest communication.
+
+In our testing environment, on the host side, we create three tap devices and
+one bridge device. Then, we attach each tap device to the bridge device. We also
+create three VMs using QEMU, configuring each with a virtio-net device and
+specifying that each virtio-net device connects to a corresponding tap device on
+the host.
+
+In VM1, the network interface created by `vwifi` operates in HostAP mode, with
+the user program hostapd running on top of it. In VM2 and VM3, we have STA mode
+interfaces with `wpa_supplicant` running on top of them.
+
 ## Build and Run (virtio)
 Below describes how to build a minimal workable VM environment.
 ### Build Linux kernel
@@ -355,15 +370,15 @@ Download Linux kernel source from [kernel.org](https://kernel.org/).
 
 Enter the top directory of the Linux kernel source and use the following command to generate the configuration file:
 ```shell
-make menuconfig
+$ make menuconfig
 ```
 The default kernel cofiguration will work for our testing environment, so just click `save` and we get `.config` on the top directory.
 
 Before building the kernel, please ensure that all the needed packges or libraries have been installed in your machine.
 
 Then Build the kernel:
-```
-make -j<num threads>
+```shell
+$ make -j<num threads>
 ```
 
 Once we have finished building the kernel, the `bzImage` will be in the `arch/<architecture>/boot/` directory. For x86 machine, that is `arch/x86/boot/bzImage`.
@@ -378,7 +393,7 @@ KDIR = <linux kernel top directory for VMs>
 
 Save the change and build `vwifi`:
 ```shell
-make
+$ make
 ```
 
 On success, we expect that `vwifi.ko` will show in the top directory of `vwifi`.
@@ -391,12 +406,12 @@ Get the `builtroot` from [https://buildroot.org](https://buildroot.org).
 
 Enter the top directory of the `buildroot` source and use the following command to generate the first-phase configuration file:
 ```shell
-make qemu_x86_64_defconfig
+$ make qemu_x86_64_defconfig
 ```
 
 The `qemu_x86_64_defconfig` configuration will not fit the testing environment, so we need to further configure it:
 ```shell
-make menuconfig
+$ make menuconfig
 ```
 
 We need a filesystem overlay for putting our `vwifi` kernel module and some user program's configuration file into the VM, so choose a place for the filesystem overlay (we recommand creating an empty directory for it).
@@ -423,42 +438,43 @@ cp <linux-top-dir>/net/wireless/cfg80211.ko \
 
 Then start building rootfs:
 ```shell
-make
+$ make
 ```
 This may take a long time, please be patient.
 
 The output image will be `output/images/rootfs.ext2`. We need three images for three VMs, so we simply copy this file into three:
 ```shell
-cp output/images/rootfs.ext2 output/images/rootfs2.ext2
-cp output/images/rootfs.ext2 output/images/rootfs3.ext2
+$ cp output/images/rootfs.ext2 output/images/rootfs2.ext2
+$ cp output/images/rootfs.ext2 output/images/rootfs3.ext2
 ```
+
 ### Setup Host Network Device
 We need three `tap` devices and each of them must be attached to a `bridge` device. Please note, creating `tap` and `bridge` devices needs privilege permission.
 
 Creating three `tap` devices:
 ```shell
-sudo ip tuntap add mode tap tap0
-sudo ip tuntap add mode tap tap1
-sudo ip tuntap add mode tap tap2
+$ sudo ip tuntap add mode tap tap0
+$ sudo ip tuntap add mode tap tap1
+$ sudo ip tuntap add mode tap tap2
 ```
 
 Creating `bridge` device:
 ```shell
-sudo ip link add name br0 type bridge
+$ sudo ip link add name br0 type bridge
 ```
 
 Attach three `tap` devices on `bridge` device:
 ```shell
-sudo ip link set tap0 master br0
-sudo ip link set tap1 master br0
-sudo ip link set tap2 master br0
+$ sudo ip link set tap0 master br0
+$ sudo ip link set tap1 master br0
+$ sudo ip link set tap2 master br0
 ```
 
 ### Start VM with Qemu
 Once we have our kernel image and rootfs, we can start running `Qemu`:
 
 ```shell
-sudo qemu-system-x86_64 -kernel bzImage \
+$ sudo qemu-system-x86_64 -kernel bzImage \
 -drive file=<buildroot rootfs image> -nographic \
 -append "console=ttyS0" \
 -append root=/dev/sda \
