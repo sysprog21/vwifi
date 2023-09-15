@@ -6,6 +6,8 @@ It is based on the [cfg80211 subsystem](https://www.kernel.org/doc/html/latest/d
 which works together with FullMAC drivers.
 Currently, vwifi supports both Station Mode and Host AP Mode, and is well-equipped with WPA/WPA2 security facilities. This enables users to set up a wireless environment using vwifi, hostapd (in HostAP mode interface), and wpa_supplicant (in station mode interface).
 
+Furthermore, when running on hypervisors like Qemu, `vwifi` becomes a `virtio-net` driver and has the capability to do inter-guest communication. To test `vwifi` with the virtio feature, [click here](#Testing-environment-(virtio)) to jump to the virtio section below.
+
 ## Prerequisite
 
 The following packages must be installed before building `vwifi`.
@@ -28,7 +30,7 @@ $ sudo apt install python3 python3-pip hostapd
 $ pip3 install numpy matplotlib
 ```
 
-## Testing environment
+## Testing environment (non-virtio)
 <p align="center"><img src="assets/vwifi.png" alt="logo image" width=60%></p>
 
 The testing environment consists of **one AP and two STAs**.
@@ -50,7 +52,7 @@ the kernel will use the loopback device for packet transmission/reception. This 
 
 In conclusion, all the interfaces created by `vwifi` in the testing environment will be added to an isolated network namespace.
 
-## Build and Run
+## Build and Run (non-virtio)
 
 To build the kernel module, execute the following command:
 ```shell
@@ -337,6 +339,190 @@ PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
 rtt min/avg/max/mdev = 0.054/0.141/0.342/0.117 ms
 ```
 
+## Testing environment (virtio)
+Below is our testing environment with virtio feature:
+
+<p align="center"><img src="assets/vwifi_virtio_arch.drawio.png" alt="vwifi virtio image" width=60%></p>
+
+vwifi makes use of the `virtio-net` device, Linux tap device, and Linux bridge device to fulfill inter-guest communication.
+In our testing environment, on the host side, we create three `tap` devices and one `bridge` device, then attach each `tap` device to the `bridge` device. And we create three VMs by `Qemu` with the `virtio-net` devices and specify that every `virtio-net` device connects to a `tap` device in the host.
+In VM1, the network interface created by `vwifi` will be in HostAP mode, with the user program `hostapd` running on top of it.
+In VM2 and VM3, we have an STA mode interface and `wpa_supplicant` running on top of it.
+## Build and Run (virtio)
+Below describes how to build a minimal workable VM environment.
+### Build Linux kernel
+Download Linux kernel source from [kernel.org](https://kernel.org/). 
+
+Enter the top directory of the Linux kernel source and use the following command to generate the configuration file:
+```shell
+make menuconfig
+```
+The default kernel cofiguration will work for our testing environment, so just click `save` and we get `.config` on the top directory.
+
+Before building the kernel, please ensure that all the needed packges or libraries have been installed in your machine.
+
+Then Build the kernel:
+```
+make -j<num threads>
+```
+
+Once we have finished building the kernel, the `bzImage` will be in the `arch/<architecture>/boot/` directory. For x86 machine, that is `arch/x86/boot/bzImage`.
+
+### Build `vwifi`
+Assume directory vwifi is cloned from [vwifi](https://github.com/sysprog21/vwifi), and enter the top directory.
+
+`vwifi` let the `$(KDIR)` in `Makefile` point to the default kernel source on the host, but the kernel version of the host may differ from the one for the VMs, so we need to replace it to point to the kernel source we previously built for the VMs:
+```shell
+KDIR = <linux kernel top directory for VMs>
+```
+
+Save the change and build `vwifi`:
+```shell
+make
+```
+
+On success, we expect that `vwifi.ko` will show in the top directory of `vwifi`.
+
+The cfg80211 API and net device API in the kernel have changed along with the new kernel version, and forgive us for not testing for all of them.
+### Build Rootfs by Buildroot
+We use `buildroot` to build our rootfs, you can either choose your desired tool for building rootfs.
+
+Get the `builtroot` from [https://buildroot.org](https://buildroot.org).
+
+Enter the top directory of the `buildroot` source and use the following command to generate the first-phase configuration file:
+```shell
+make qemu_x86_64_defconfig
+```
+
+The `qemu_x86_64_defconfig` configuration will not fit the testing environment, so we need to further configure it:
+```shell
+make menuconfig
+```
+
+We need a filesystem overlay for putting our `vwifi` kernel module and some user program's configuration file into the VM, so choose a place for the filesystem overlay (we recommand creating an empty directory for it).
+
+Also, we need network applications like `iw`, `hostapd` and `wpa_supplicant`.
+```
+System configuration ---> Run a getty (login prompt) after boot ---> TTY port ---> ttyS0
+System configuration ---> Root filesystem overlay directories ---> <the place you wnat>
+Kernel ---> Linux Kernel ---> no
+Target packages ---> Networking applications ---> hostapd
+Target packages ---> Networking applications ---> iw
+Target packages ---> Networking applications ---> wpa_supplicant
+Filesystem images ---> ext2/3/4 root filesystem
+```
+
+After finishing the configuration, we can put the needed kernel modules and configuration files into the filesystem overlay directory:
+```shell
+cp <linux-top-dir>/net/wireless/cfg80211.ko \
+<vwifi-top-dir>/vwifi.ko \
+<vwifi-top-dir>/scripts/hostapd.conf \
+<vwifi-top-dir>/scripts/wpa_supplicant.conf \
+<overlay-dir>
+```
+
+Then start building rootfs:
+```shell
+make
+```
+This may take a long time, please be patient.
+
+The output image will be `output/images/rootfs.ext2`. We need three images for three VMs, so we simply copy this file into three:
+```shell
+cp output/images/rootfs.ext2 output/images/rootfs2.ext2
+cp output/images/rootfs.ext2 output/images/rootfs3.ext2
+```
+### Setup Host Network Device
+We need three `tap` devices and each of them must be attached to a `bridge` device. Please note, creating `tap` and `bridge` devices needs privilege permission.
+
+Creating three `tap` devices:
+```shell
+sudo ip tuntap add mode tap tap0
+sudo ip tuntap add mode tap tap1
+sudo ip tuntap add mode tap tap2
+```
+
+Creating `bridge` device:
+```shell
+sudo ip link add name br0 type bridge
+```
+
+Attach three `tap` devices on `bridge` device:
+```shell
+sudo ip link set tap0 master br0
+sudo ip link set tap1 master br0
+sudo ip link set tap2 master br0
+```
+
+### Start VM with Qemu
+Once we have our kernel image and rootfs, we can start running `Qemu`:
+
+```shell
+sudo qemu-system-x86_64 -kernel bzImage \
+-drive file=<buildroot rootfs image> -nographic \
+-append "console=ttyS0" \
+-append root=/dev/sda \
+-netdev tap,id=<any name>,ifname=<host tap device> \
+-device virtio-net-pci,netdev=<the name in id=>,mac=<MAC address>,mrg_rxbuf=off \
+-serial mon:stdio
+```
+
+You need to run the command above three times, please ensure the `buildroot` rootfs image, `tap` device and MAC address in every VM must be different. Also, ensure that the `mrg_rxbuf=off` has been specified.
+
+### Needed Steps in Every VM
+#### Raondom Number Generator
+`hostapd` and `wpa_supplicant` need the random number generator `/dev/random` for generating the random number used in a 4-way handshake. However, for some reason (which may be related to IRQ), accessing `/dev/random` may be not available or even not possible. And we found that `/dev/urandom` is always available, so we use a soft link to let the  `/dev/random` link to `/dev/urandom`:
+```shell
+mv /dev/random /dev/random.orig
+ln -s /dev/urandom /dev/random
+```
+#### Loading Kernel Modules
+`vwifi` depends on `cfg80211.ko`, so firstly we load the `cfg80211.ko`:
+```shell
+insmod cfg80211.ko
+```
+
+Then we can load our `vwifi.ko`. Note that for now, we only allow single network interface in `vwifi` when it's running on virtio:
+```shell
+insmod vwifi.ko station=1
+```
+
+#### Setting Network Interface
+Start the network interface:
+```shell
+ip link set owl0 up
+```
+And assign an IP address. Note that, we should assign different IP addresses (but the same subnet) for every network interface in the three VMs:
+```shell
+ip addr add <IP address/netmask> dev owl0
+```
+### Start `hostapd` and `wpa_supplicant`
+In our testing environment, the HostAP mode interface is in VM1, so running `hostapd` on VM1:
+```shell
+hostapd -i owl0 -B hostapd.conf
+```
+And running `wpa_supplicant` on the other two VMs:
+```shell
+wpa_supplicant -i owl0 -B -c wpa_supplicant.conf
+```
+
+For now, the two STA mode interfaces in VM1 and VM2 should have been connected to the AP mode interface in VM0. 
+
+For validating the connection for the STA mode network interface, use the following command:
+```shell
+iw dev owl0 link
+```
+### Ping Test
+In VM1, we can ping the network interfaces in VM2 and VM3:
+```
+ping <vm2 interface's ip address>
+```
+
+```
+ping <vm3 interface's ip address>
+```
+Likewise, VM2 and VM3 can ping the other VMs as well.
+
 ### Optional: Monitoring Wireless Device
 
 If desired, you can use wireless device monitoring applications such as [wavemon](https://github.com/uoaerg/wavemon) to observe signal and noise levels,
@@ -359,3 +545,5 @@ by a MIT-style license that can be found in the LICENSE file.
 * [Emulating WLAN in Linux - part II: mac80211_hwsim](https://linuxembedded.fr/2021/01/emulating-wlan-in-linux-part-ii-mac80211hwsim)
 * [virt_wifi](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/virtual/virt_wifi.c): a complete virtual wireless driver that can be used as a wrapper around Ethernet.
 * [vwifi](https://github.com/Raizo62/vwifi): simulate Wi-Fi (802.11) between Linux Virtual Machines.
+* [virtio-overview](https://www.redhat.com/en/blog/virtio-devices-and-drivers-overview-headjack-and-phone): an virtio overview.
+* [virtio: How data travels](https://www.redhat.com/en/blog/virtqueues-and-virtio-ring-how-data-travels): explain the virtqueue and virtio ring.

@@ -27,3 +27,5 @@ ForEachMacros:
   - vec_foreach
   - hash_for_each_possible_safe
   - hash_for_each_safe
+  - hash_for_each
+  - hash_for_each_possible
