@@ -1,8 +1,10 @@
 #include <linux/etherdevice.h>
 #include <linux/hashtable.h>
+#include <linux/hrtimer.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/random.h>
+#include <linux/string.h>
 #include <linux/timer.h>
 #include <linux/version.h>
 #include <linux/virtio.h>
@@ -116,6 +118,11 @@ struct owl_vif {
              * this field is for interface in AP mode.
              */
             struct list_head ap_list;
+            /* beacon interval in us */
+            u64 beacon_int;
+            struct hrtimer beacon_timer;
+            struct ieee80211_channel *channel;
+            enum nl80211_chan_width bw;
         };
     };
 
@@ -391,6 +398,85 @@ static void inform_bss(struct owl_vif *vif)
          */
         cfg80211_put_bss(vif->wdev.wiphy, bss);
     }
+}
+
+static void owl_beacon_inform_bss(struct owl_vif *ap,
+                                  struct owl_vif *sta,
+                                  struct cfg80211_inform_bss *bss_meta,
+                                  int capability,
+                                  u64 tsf)
+{
+    struct cfg80211_bss *bss = NULL;
+    bss_meta->signal = DBM_TO_MBM(rand_int_smooth(-100, -30, jiffies));
+
+    /* It is possible to use cfg80211_inform_bss() instead. */
+    bss = cfg80211_inform_bss_data(sta->wdev.wiphy, bss_meta,
+                                   CFG80211_BSS_FTYPE_BEACON, ap->bssid, tsf,
+                                   capability, ap->beacon_int, ap->beacon_ie,
+                                   ap->beacon_ie_len, GFP_KERNEL);
+
+    /* cfg80211_inform_bss_data() returns cfg80211_bss structure reference
+     * counter of which should be decremented if it is unused.
+     */
+    if (bss)
+        cfg80211_put_bss(sta->wdev.wiphy, bss);
+}
+
+/* The callback function of the beacon timer prepares a structure with
+ * custom BSS information and "notifies" the core about the "new"
+ * BSS information.
+ */
+static enum hrtimer_restart owl_beacon(struct hrtimer *timer)
+{
+    struct owl_vif *vif = container_of(timer, struct owl_vif, beacon_timer);
+
+    if (vif->wdev.iftype != NL80211_IFTYPE_AP &&
+        vif->wdev.iftype != NL80211_IFTYPE_MESH_POINT &&
+        vif->wdev.iftype != NL80211_IFTYPE_ADHOC &&
+        vif->wdev.iftype != NL80211_IFTYPE_OCB)
+        return HRTIMER_NORESTART;
+
+    u64 timestamp = div_u64(ktime_get_boottime_ns(), 1000);
+
+    struct cfg80211_inform_bss bss_meta = {
+        .boottime_ns = ktime_get_boottime_ns(),
+        .chan = vif->channel,
+    };
+
+    switch (vif->bw) {
+    case NL80211_CHAN_WIDTH_5:
+        bss_meta.scan_width = NL80211_BSS_CHAN_WIDTH_5;
+        break;
+    case NL80211_CHAN_WIDTH_10:
+        bss_meta.scan_width = NL80211_BSS_CHAN_WIDTH_10;
+        break;
+    default:
+        bss_meta.scan_width = NL80211_BSS_CHAN_WIDTH_20;
+        break;
+    }
+
+    int capability = WLAN_CAPABILITY_ESS;
+
+    if (vif->privacy)
+        capability |= WLAN_CAPABILITY_PRIVACY;
+
+    struct owl_vif *sta;
+    list_for_each_entry (sta, &owl->vif_list, list) {
+        if (sta->wdev.iftype != NL80211_IFTYPE_STATION)
+            continue;
+
+        owl_beacon_inform_bss(vif, sta, &bss_meta, capability, timestamp);
+    }
+
+    /* beacon at next TBTT */
+    u64 tsf, until_tbtt;
+    tsf = ktime_to_us(ktime_get_real());
+    u32 bcn_int = vif->beacon_int;
+    until_tbtt = bcn_int - do_div(tsf, bcn_int);
+    hrtimer_forward_now(&vif->beacon_timer,
+                        ns_to_ktime(until_tbtt * NSEC_PER_USEC));
+
+    return HRTIMER_RESTART;
 }
 
 static void vwifi_virtio_fill_vq(struct virtqueue *vq, u8 vnet_hdr_len);
@@ -938,7 +1024,8 @@ static int owl_connect(struct wiphy *wiphy,
     vif->sme_state = SME_CONNECTING;
     vif->ssid_len = sme->ssid_len;
     memcpy(vif->req_ssid, sme->ssid, sme->ssid_len);
-    memcpy(vif->req_bssid, sme->bssid, ETH_ALEN);
+    if (sme->bssid)
+        memcpy(vif->req_bssid, sme->bssid, ETH_ALEN);
     mutex_unlock(&vif->lock);
 
     if (!schedule_work(&vif->ws_connect))
@@ -1031,6 +1118,16 @@ static int owl_get_station(struct wiphy *wiphy,
         sinfo->filled |= BIT_ULL(NL80211_STA_INFO_CONNECTED_TIME);
         sinfo->connected_time =
             jiffies_to_msecs(jiffies - vif->conn_time) / 1000;
+
+        if (mutex_lock_interruptible(&vif->ap->lock))
+            return -ENONET;
+
+        sinfo->bss_param.beacon_interval =
+            cpu_to_le16(vif->ap->beacon_int / 1024);
+        sinfo->bss_param.dtim_period = 1;
+
+        mutex_unlock(&vif->ap->lock);
+        sinfo->bss_param.flags |= BSS_PARAM_FLAGS_SHORT_PREAMBLE;
     }
 
     sinfo->tx_packets = vif->stats.tx_packets;
@@ -1268,6 +1365,37 @@ static int owl_start_ap(struct wiphy *wiphy,
         return 1;
     }
 
+    if (settings->chandef.chan) {
+        pr_info("owl: %s center freq: %d\n", ndev->name,
+                settings->chandef.chan->center_freq);
+        vif->channel = settings->chandef.chan;
+    }
+
+    if (settings->chandef.width)
+        vif->bw = settings->chandef.width;
+
+    /* Default beacon interval is 100 time units */
+    u64 beacon_int =
+        settings->beacon_interval ? settings->beacon_interval : 100;
+    /* beacon interval in us */
+    vif->beacon_int = beacon_int * 1024;
+
+    /* Initialize hrtimer of beacon */
+    pr_info("owl: init beacon_timer.\n");
+    hrtimer_init(&vif->beacon_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_SOFT);
+    vif->beacon_timer.function = owl_beacon;
+
+    if (!hrtimer_is_queued(&vif->beacon_timer)) {
+        u64 tsf, until_tbtt;
+        tsf = ktime_to_us(ktime_get_real());
+        u32 bcn_int = vif->beacon_int;
+        until_tbtt = bcn_int - do_div(tsf, bcn_int);
+
+        hrtimer_start(&vif->beacon_timer,
+                      ns_to_ktime(until_tbtt * NSEC_PER_USEC),
+                      HRTIMER_MODE_REL_SOFT);
+    }
+
     spin_lock_irqsave(&vwifi_virtio_lock, flags);
     if (vwifi_virtio_enabled) {
         spin_unlock_irqrestore(&vwifi_virtio_lock, flags);
@@ -1327,7 +1455,9 @@ static int owl_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
 
     spin_unlock_irqrestore(&vwifi_virtio_lock, flags);
 
-    if (owl->state == OWL_READY) {
+    if (owl->state == OWL_SHUTDOWN) {
+        hrtimer_cancel(&vif->beacon_timer);
+
         /* Destroy bss_list first */
         list_for_each_entry_safe (pos, safe, &vif->bss_list, bss_list)
             list_del(&pos->bss_list);
@@ -1534,8 +1664,6 @@ static int owl_delete_interface(struct owl_vif *vif)
         if (mutex_lock_interruptible(&vif->lock))
             return -ERESTARTSYS;
 
-        netif_stop_queue(vif->ndev);
-
         cancel_work_sync(&vif->ws_scan);
         cancel_work_sync(&vif->ws_scan_timeout);
         del_timer_sync(&vif->scan_complete);
@@ -1589,11 +1717,18 @@ static struct cfg80211_ops owl_cfg_ops = {
     .change_station = owl_change_station,
 };
 
-/* Macro for defining channel array */
-#define CHAN_2GHZ(_channel, _freq)                         \
-    {                                                      \
-        .band = NL80211_BAND_2GHZ, .hw_value = (_channel), \
-        .center_freq = (_freq),                            \
+/* Macro for defining 2GHZ channel array */
+#define CHAN_2GHZ(channel, freq)                          \
+    {                                                     \
+        .band = NL80211_BAND_2GHZ, .hw_value = (channel), \
+        .center_freq = (freq),                            \
+    }
+
+/* Macro for defining 5GHZ channel array */
+#define CHAN_5GHZ(channel)                                \
+    {                                                     \
+        .band = NL80211_BAND_5GHZ, .hw_value = (channel), \
+        .center_freq = 5000 + (5 * (channel)),            \
     }
 
 /* Macro for defining rate table */
@@ -1603,7 +1738,7 @@ static struct cfg80211_ops owl_cfg_ops = {
     }
 
 /* Array of "supported" channels in 2GHz band. It is required for wiphy. */
-static struct ieee80211_channel owl_supported_channels_2ghz[] = {
+static const struct ieee80211_channel owl_supported_channels_2ghz[] = {
     CHAN_2GHZ(1, 2412),  CHAN_2GHZ(2, 2417),  CHAN_2GHZ(3, 2422),
     CHAN_2GHZ(4, 2427),  CHAN_2GHZ(5, 2432),  CHAN_2GHZ(6, 2437),
     CHAN_2GHZ(7, 2442),  CHAN_2GHZ(8, 2447),  CHAN_2GHZ(9, 2452),
@@ -1611,10 +1746,22 @@ static struct ieee80211_channel owl_supported_channels_2ghz[] = {
     CHAN_2GHZ(13, 2472), CHAN_2GHZ(14, 2484),
 };
 
-/* Array of supported rates, required to support at least those next rates
- * for 2GHz band.
+/* Array of "supported" channels in 5GHz band. It is required for wiphy. */
+static const struct ieee80211_channel owl_supported_channels_5ghz[] = {
+    CHAN_5GHZ(34),  CHAN_5GHZ(36),  CHAN_5GHZ(38),  CHAN_5GHZ(40),
+    CHAN_5GHZ(42),  CHAN_5GHZ(44),  CHAN_5GHZ(46),  CHAN_5GHZ(48),
+    CHAN_5GHZ(52),  CHAN_5GHZ(56),  CHAN_5GHZ(60),  CHAN_5GHZ(64),
+    CHAN_5GHZ(100), CHAN_5GHZ(104), CHAN_5GHZ(108), CHAN_5GHZ(112),
+    CHAN_5GHZ(116), CHAN_5GHZ(120), CHAN_5GHZ(124), CHAN_5GHZ(128),
+    CHAN_5GHZ(132), CHAN_5GHZ(136), CHAN_5GHZ(140), CHAN_5GHZ(144),
+    CHAN_5GHZ(149), CHAN_5GHZ(153), CHAN_5GHZ(157), CHAN_5GHZ(161),
+    CHAN_5GHZ(165),
+};
+
+/* Array of supported rates, required to support those next rates
+ * for 2GHz and 5GHz band.
  */
-static struct ieee80211_rate owl_supported_rates_2ghz[] = {
+static const struct ieee80211_rate owl_supported_rates[] = {
     RATE_ENT(10, 0x1),    RATE_ENT(20, 0x2),    RATE_ENT(55, 0x4),
     RATE_ENT(110, 0x8),   RATE_ENT(60, 0x10),   RATE_ENT(90, 0x20),
     RATE_ENT(120, 0x40),  RATE_ENT(180, 0x80),  RATE_ENT(240, 0x100),
@@ -1622,17 +1769,10 @@ static struct ieee80211_rate owl_supported_rates_2ghz[] = {
 };
 
 /* Describes supported band of 2GHz. */
-static struct ieee80211_supported_band nf_band_2ghz = {
-    /* FIXME: add other band capabilities if needed, such as 40 width */
-    .ht_cap.cap = IEEE80211_HT_CAP_SGI_20,
-    .ht_cap.ht_supported = false,
+static struct ieee80211_supported_band nf_band_2ghz;
 
-    .channels = owl_supported_channels_2ghz,
-    .n_channels = ARRAY_SIZE(owl_supported_channels_2ghz),
-
-    .bitrates = owl_supported_rates_2ghz,
-    .n_bitrates = ARRAY_SIZE(owl_supported_rates_2ghz),
-};
+/* Describes supported band of 5GHz. */
+static struct ieee80211_supported_band nf_band_5ghz;
 
 /* Unregister and free virtual interfaces and wiphy. */
 static void owl_free(void)
@@ -1654,6 +1794,7 @@ static void owl_free(void)
 static struct wiphy *owcfg80211_add(void)
 {
     struct wiphy *wiphy = NULL;
+    enum nl80211_band band;
 
     /* allocate wiphy context. It is possible just to use wiphy_new().
      * wiphy should represent physical FullMAC wireless device. We need
@@ -1677,11 +1818,38 @@ static struct wiphy *owcfg80211_add(void)
     wiphy->interface_modes =
         BIT(NL80211_IFTYPE_STATION) | BIT(NL80211_IFTYPE_AP);
 
-    /* wiphy should have at least 1 band.
-     * Also fill NL80211_BAND_5GHZ if required. In this module, only 1 band
-     * with 1 "channel"
-     */
-    wiphy->bands[NL80211_BAND_2GHZ] = &nf_band_2ghz;
+    for (band = NL80211_BAND_2GHZ; band < NUM_NL80211_BANDS; band++) {
+        /* FIXME: add other band capabilities if needed, such as 40 width */
+        switch (band) {
+        case NL80211_BAND_2GHZ:
+            nf_band_2ghz.ht_cap.cap = IEEE80211_HT_CAP_SGI_20;
+            nf_band_2ghz.ht_cap.ht_supported = false;
+            nf_band_2ghz.channels =
+                kmemdup(owl_supported_channels_2ghz,
+                        sizeof(owl_supported_channels_2ghz), GFP_KERNEL);
+            nf_band_2ghz.n_channels = ARRAY_SIZE(owl_supported_channels_2ghz);
+            nf_band_2ghz.bitrates = kmemdup(
+                owl_supported_rates, sizeof(owl_supported_rates), GFP_KERNEL);
+            nf_band_2ghz.n_bitrates = ARRAY_SIZE(owl_supported_rates);
+            wiphy->bands[band] = &nf_band_2ghz;
+            break;
+        case NL80211_BAND_5GHZ:
+            nf_band_5ghz.channels =
+                kmemdup(owl_supported_channels_5ghz,
+                        sizeof(owl_supported_channels_5ghz), GFP_KERNEL);
+            nf_band_5ghz.n_channels = ARRAY_SIZE(owl_supported_channels_5ghz);
+            nf_band_5ghz.bitrates =
+                kmemdup(owl_supported_rates + 4,
+                        (ARRAY_SIZE(owl_supported_rates) - 4) *
+                            sizeof(struct ieee80211_rate),
+                        GFP_KERNEL);
+            nf_band_5ghz.n_bitrates = ARRAY_SIZE(owl_supported_rates) - 4;
+            wiphy->bands[band] = &nf_band_5ghz;
+            break;
+        default:
+            continue;
+        }
+    }
 
     /* scan - if the device supports "scan", we need to define max_scan_ssids
      * at least.
