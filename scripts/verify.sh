@@ -73,7 +73,7 @@ if [ $final_ret -eq 0 ]; then
     # STA owl1 performs scan and connect to TestAP
     sudo ip netns exec ns1 iw dev owl1 scan > scan_result.log
     cat scan_result.log | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| tail -n 1 > scan_bssid.log
-    sudo ip netns exec ns1 iw dev owl1 connect TestAP
+    sudo ip netns exec ns1 iw dev owl1 connect test
     sudo ip netns exec ns1 iw dev owl1 link | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > connected.log
 
     DIFF=$(diff connected.log scan_bssid.log)
@@ -89,7 +89,7 @@ if [ $final_ret -eq 0 ]; then
     # STA owl2 performs scan and connect to TestAP
     sudo ip netns exec ns2 iw dev owl2 scan > scan_result.log
     cat scan_result.log | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| tail -n 1 > scan_bssid.log
-    sudo ip netns exec ns2 iw dev owl2 connect TestAP
+    sudo ip netns exec ns2 iw dev owl2 connect test
     sudo ip netns exec ns2 iw dev owl2 link | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > connected.log
 
     DIFF=$(diff connected.log scan_bssid.log)
