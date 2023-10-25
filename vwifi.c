@@ -62,6 +62,8 @@ struct owl_context {
     struct list_head ap_list;  /**< maintaining multiple AP */
 };
 
+static DEFINE_SPINLOCK(vif_list_lock);
+
 /* SME stands for "station management entity" */
 enum sme_state { SME_DISCONNECTED, SME_CONNECTING, SME_CONNECTED };
 
@@ -460,6 +462,7 @@ static enum hrtimer_restart owl_beacon(struct hrtimer *timer)
     if (vif->privacy)
         capability |= WLAN_CAPABILITY_PRIVACY;
 
+    spin_lock(&vif_list_lock);
     struct owl_vif *sta;
     list_for_each_entry (sta, &owl->vif_list, list) {
         if (sta->wdev.iftype != NL80211_IFTYPE_STATION)
@@ -467,6 +470,7 @@ static enum hrtimer_restart owl_beacon(struct hrtimer *timer)
 
         owl_beacon_inform_bss(vif, sta, &bss_meta, capability, timestamp);
     }
+    spin_unlock(&vif_list_lock);
 
     /* beacon at next TBTT */
     u64 tsf, until_tbtt;
@@ -1263,15 +1267,12 @@ static struct wireless_dev *owinterface_add(struct wiphy *wiphy, int if_idx)
     hash_init(vif->bss_sta_table);
 
     /* Add vif into global vif_list */
-    if (mutex_lock_interruptible(&owl->lock))
-        goto error_add_list;
+    spin_lock_bh(&vif_list_lock);
     list_add_tail(&vif->list, &owl->vif_list);
-    mutex_unlock(&owl->lock);
+    spin_unlock_bh(&vif_list_lock);
 
     return &vif->wdev;
 
-error_add_list:
-    unregister_netdev(vif->ndev);
 error_ndev_register:
     free_netdev(vif->ndev);
 error_alloc_ndev:
@@ -1779,8 +1780,13 @@ static void owl_free(void)
 {
     struct owl_vif *vif = NULL, *safe = NULL;
 
-    list_for_each_entry_safe (vif, safe, &owl->vif_list, list)
+    spin_lock_bh(&vif_list_lock);
+    list_for_each_entry_safe (vif, safe, &owl->vif_list, list) {
+        spin_unlock_bh(&vif_list_lock);
         owl_delete_interface(vif);
+        spin_lock_bh(&vif_list_lock);
+    }
+    spin_unlock_bh(&vif_list_lock);
 
     kfree(owl);
 }
