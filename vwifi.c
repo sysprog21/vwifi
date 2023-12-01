@@ -1220,7 +1220,7 @@ static struct wireless_dev *owinterface_add(struct wiphy *wiphy, int if_idx)
      * address (the first byte of multicast addrs is odd).
      */
     char intf_name[ETH_ALEN] = {0};
-    snprintf(intf_name + 1, ETH_ALEN, "%s%d", NAME_PREFIX, if_idx);
+    snprintf(intf_name + 1, ETH_ALEN - 1, "%s%d", NAME_PREFIX, if_idx);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
     eth_hw_addr_set(vif->ndev, intf_name);
