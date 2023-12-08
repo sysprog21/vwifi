@@ -14,6 +14,9 @@
 #include <net/cfg80211.h>
 #include <uapi/linux/virtio_net.h>
 
+#include <linux/netlink.h>
+#include <net/sock.h>
+
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
 MODULE_DESCRIPTION("virtual cfg80211 driver");
@@ -60,6 +63,7 @@ struct owl_context {
     enum vwifi_state state;    /**< indicate the program state */
     struct list_head vif_list; /**< maintaining all interfaces */
     struct list_head ap_list;  /**< maintaining multiple AP */
+    char *blocklist;           /**< maintaining the blocklist */
 };
 
 /* SME stands for "station management entity" */
@@ -149,6 +153,80 @@ MODULE_PARM_DESC(station, "Number of virtual interfaces running in STA mode.");
 
 /* Global context */
 static struct owl_context *owl = NULL;
+
+/* Blocklist content */
+#define MAX_BLACKLIST_SIZE 1024
+
+static struct sock *nl_sk = NULL;
+
+static int blocklist_check(char *dest, char *source)
+{
+    if (!owl->blocklist || !*(owl->blocklist))
+        return 0;
+
+    char *user_input =
+        kmalloc(sizeof(char) * (strlen(owl->blocklist) + 1), GFP_KERNEL);
+    strncpy(user_input, owl->blocklist, strlen(owl->blocklist));
+
+    char *token = strsep(&user_input, "\n");
+    while (token) {
+        char *blacklist_dest = strsep(&token, " ");
+        strsep(&token, " ");
+        char *blacklist_source = token;
+        if (!strcmp(dest, blacklist_dest) &&
+            !strcmp(source, blacklist_source)) {
+            kfree(user_input);
+            return 1;
+        }
+        token = strsep(&user_input, "\n");
+    }
+    kfree(user_input);
+
+    return 0;
+}
+
+static void blocklist_load(char *blist)
+{
+    if (!owl->blocklist) {
+        pr_info("owl->blocklist have to be kmalloc first\n");
+        return;
+    }
+    memset(owl->blocklist, '\0', MAX_BLACKLIST_SIZE); /* clear the blocklist */
+    strncpy(owl->blocklist, blist, strlen(blist));
+}
+
+static void blocklist_nl_recv(struct sk_buff *skb)
+{
+    struct nlmsghdr *nlh; /* netlink message header */
+    int pid;
+    struct sk_buff *skb_out;
+    char *msg = "vwifi has received your blocklist";
+    int msg_size = strlen(msg);
+
+    nlh = (struct nlmsghdr *) skb->data;
+
+    blocklist_load((char *) nlmsg_data(nlh));
+
+    /* pid of sending process */
+    pid = nlh->nlmsg_pid;
+
+    skb_out = nlmsg_new(msg_size, 0);
+    if (!skb_out) {
+        pr_info("netlink: Failed to allocate new skb\n");
+        return;
+    }
+
+    nlh = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, msg_size, 0);
+    NETLINK_CB(skb_out).dst_group = 0; /* unicast group */
+    strncpy(nlmsg_data(nlh), msg, msg_size);
+
+    if (nlmsg_unicast(nl_sk, skb_out, pid) < 0)
+        pr_info("netlink: Error while sending back to user\n");
+}
+
+static struct netlink_kernel_cfg nl_config = {
+    .input = blocklist_nl_recv,
+};
 
 /**
  * enum virtio_vqs - queues for virtio frame transmission and receivement
@@ -713,6 +791,13 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
     }
     /* TX by interface of AP mode */
     else if (vif->wdev.iftype == NL80211_IFTYPE_AP) {
+        /* Find the source interface */
+        struct owl_vif *src_vif;
+        list_for_each_entry (src_vif, &vif->bss_list, bss_list) {
+            if (ether_addr_equal(eth_hdr->h_source, src_vif->ndev->dev_addr))
+                break;
+        }
+
         /* Check if the packet is broadcasting */
         if (is_broadcast_ether_addr(eth_hdr->h_dest)) {
             list_for_each_entry (dest_vif, &vif->bss_list, bss_list) {
@@ -720,6 +805,10 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
                  */
                 if (ether_addr_equal(eth_hdr->h_source,
                                      dest_vif->ndev->dev_addr))
+                    continue;
+
+                /* Don't send packet from dest_vif's blocklist */
+                if (blocklist_check(dest_vif->ndev->name, src_vif->ndev->name))
                     continue;
 
                 if (__owl_ndo_start_xmit(vif, dest_vif, skb))
@@ -731,7 +820,9 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
             list_for_each_entry (dest_vif, &vif->bss_list, bss_list) {
                 if (ether_addr_equal(eth_hdr->h_dest,
                                      dest_vif->ndev->dev_addr)) {
-                    if (__owl_ndo_start_xmit(vif, dest_vif, skb))
+                    if (!blocklist_check(dest_vif->ndev->name,
+                                         src_vif->ndev->name) &&
+                        __owl_ndo_start_xmit(vif, dest_vif, skb))
                         count++;
                     break;
                 }
@@ -1782,6 +1873,7 @@ static void owl_free(void)
     list_for_each_entry_safe (vif, safe, &owl->vif_list, list)
         owl_delete_interface(vif);
 
+    kfree(owl->blocklist);
     kfree(owl);
 }
 
@@ -2832,6 +2924,7 @@ static int __init vwifi_init(void)
     mutex_init(&owl->lock);
     INIT_LIST_HEAD(&owl->vif_list);
     INIT_LIST_HEAD(&owl->ap_list);
+    owl->blocklist = kmalloc(sizeof(char) * MAX_BLACKLIST_SIZE, GFP_KERNEL);
 
     for (int i = 0; i < station; i++) {
         struct wiphy *wiphy = owcfg80211_add();
@@ -2839,6 +2932,12 @@ static int __init vwifi_init(void)
             goto cfg80211_add;
         if (!owinterface_add(wiphy, i))
             goto interface_add;
+    }
+
+    nl_sk = netlink_kernel_create(&init_net, NETLINK_USERSOCK, &nl_config);
+    if (!nl_sk) {
+        pr_info("Error creating netlink socket\n");
+        goto cfg80211_add;
     }
 
     err = register_virtio_driver(&virtio_vwifi);
@@ -2864,6 +2963,7 @@ static void __exit vwifi_exit(void)
 
     unregister_virtio_driver(&virtio_vwifi);
     owl_free();
+    netlink_kernel_release(nl_sk);
 }
 
 module_init(vwifi_init);
