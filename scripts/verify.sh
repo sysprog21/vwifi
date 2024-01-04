@@ -103,12 +103,12 @@ if [ $final_ret -eq 0 ]; then
     echo "=================================="
 
     # ping test: STA owl1 (10.0.0.2) <--> STA owl2 (10.0.0.3),
-    # should sucess, packet will be relayed by AP owl0 (10.0.0.1)
+    # should success, packet will be relayed by AP owl0 (10.0.0.1)
     echo
     echo "================================================================================"
     echo "Ping Test: STA owl1 (10.0.0.2) (connected) <--> STA owl2 (10.0.0.3) (connected)"
     echo
-    echo "(should sucess, packet will be relay by AP owl0 (10.0.0.1))"
+    echo "(should success, packet will be relay by AP owl0 (10.0.0.1))"
     echo "================================================================================"
     sudo ip netns exec ns1 ping -c 4 10.0.0.3
 
@@ -119,12 +119,12 @@ if [ $final_ret -eq 0 ]; then
     fi
 
     # ping test: STA owl2 (10.0.0.3) <--> AP owl0 (10.0.0.1),
-    # should sucess, packet will directly send/receive between STA and AP
+    # should success, packet will directly send/receive between STA and AP
     echo
     echo "================================================================================"
     echo "Ping Test: STA owl1 (10.0.0.3) (connected) <--> AP owl0 (10.0.0.1)"
     echo
-    echo "(should sucess, packet will directly send/receive between STA owl1 and AP owl0)"
+    echo "(should success, packet will directly send/receive between STA owl1 and AP owl0)"
     echo "================================================================================"
     sudo ip netns exec ns2 ping -c 4 10.0.0.1
     
