@@ -85,7 +85,7 @@ To check the network interfaces, run the following command:
 $ ip link
 ```
 
-There should be entries starting with `owl0`, `owl1`, and `owl2`, which correspond to the interfaces created by `vwifi`.
+There should be entries starting with `vw0`, `vw1`, and `vw2`, which correspond to the interfaces created by `vwifi`.
 
 To view the available wireless interfaces, execute the following command:
 ```shell
@@ -95,19 +95,19 @@ $ sudo iw dev
 You should see something similar to the following output:
 ```
 phy#2
-	Interface owl2
+	Interface vw2
 		ifindex 5
 		wdev 0x200000001
 		addr 00:6f:77:6c:32:00
 		type managed
 phy#1
-	Interface owl1
+	Interface vw1
 		ifindex 4
 		wdev 0x100000001
 		addr 00:6f:77:6c:31:00
 		type managed
 phy#0
-	Interface owl0
+	Interface vw0
 		ifindex 3
 		wdev 0x1
 		addr 00:6f:77:6c:30:00
@@ -217,15 +217,15 @@ $ sudo iw phy phy2 set netns name ns2
 
 Now, assign an IP address to both interfaces using the following commands:
 ```shell
-$ sudo ip netns exec ns0 ip addr add 10.0.0.1/24 dev owl0
-$ sudo ip netns exec ns1 ip addr add 10.0.0.2/24 dev owl1
-$ sudo ip netns exec ns2 ip addr add 10.0.0.3/24 dev owl2
+$ sudo ip netns exec ns0 ip addr add 10.0.0.1/24 dev vw0
+$ sudo ip netns exec ns1 ip addr add 10.0.0.2/24 dev vw1
+$ sudo ip netns exec ns2 ip addr add 10.0.0.3/24 dev vw2
 ```
 
 ### Running hostapd on the HostAP Mode Interface
 Prepare the following script `hostapd.conf` (you can modify the script based on your needs):
 ```
-interface=owl0
+interface=vw0
 driver=nl80211
 debug=1
 ctrl_interface=/var/run/hostapd
@@ -238,9 +238,9 @@ wpa_key_mgmt=WPA-PSK
 wpa_pairwise=CCMP
 ```
 
-Run `hostapd` on the interface `owl0`:
+Run `hostapd` on the interface `vw0`:
 ```shell	
-$ sudo ip netns exec ns0 hostapd -i owl0 -B hostapd.conf
+$ sudo ip netns exec ns0 hostapd -i vw0 -B hostapd.conf
 ```
 
 ### Running `wpa_supplicant` on the Station Mode Interfaces
@@ -255,20 +255,20 @@ network={
 Then run the `wpa_supplicant` on the interface `ns1` and `ns2`:
 ```shell
 $ sudo ip netns exec ns1 \
-       wpa_supplicant -i owl1 -B -c wpa_supplicant.conf
+       wpa_supplicant -i vw1 -B -c wpa_supplicant.conf
 $ sudo ip netns exec ns2 \
-      wpa_supplicant -i owl2 -B -c wpa_supplicant.conf 
+      wpa_supplicant -i vw2 -B -c wpa_supplicant.conf 
 ```
 
 ### Validating the Connection
 To validate the connection, use the following command:
 ```shell
-$ sudo ip netns exec ns1 iw dev owl1 link
+$ sudo ip netns exec ns1 iw dev vw1 link
 ```
 
 The output might seem like this:
 ```
-Connected to 00:6f:77:6c:30:00 (on owl1)
+Connected to 00:6f:77:6c:30:00 (on vw1)
 	SSID: test
 	freq: 2437
 	RX: 282 bytes (2 packets)
@@ -276,18 +276,18 @@ Connected to 00:6f:77:6c:30:00 (on owl1)
 	signal: -84 dBm
 ```
 
-It shows that `owl1` has connected to the BSS with BSSID `00:6f:77:6c:30:00`, which is the MAC address of `owl0`.
+It shows that `vw1` has connected to the BSS with BSSID `00:6f:77:6c:30:00`, which is the MAC address of `vw0`.
 
-You may also check the connection of `owl2` by slightly changing the command above.
+You may also check the connection of `vw2` by slightly changing the command above.
 
-On the other hand, we can validate all the stations connected to `owl0` by the following commands:
+On the other hand, we can validate all the stations connected to `vw0` by the following commands:
 ```shell
-sudo ip netns exec ns0 iw dev owl0 station dump
+sudo ip netns exec ns0 iw dev vw0 station dump
 ```
 
 The output may seem like this:
 ```
-Station 00:6f:77:6c:31:00 (on owl0)
+Station 00:6f:77:6c:31:00 (on vw0)
 	inactive time:	5588 ms
 	rx bytes:	5366
 	rx packets:	65
@@ -296,7 +296,7 @@ Station 00:6f:77:6c:31:00 (on owl0)
 	tx failed:	74
 	signal:  	-57 dBm
 	current time:	1689679337171 ms
-Station 00:6f:77:6c:32:00 (on owl0)
+Station 00:6f:77:6c:32:00 (on vw0)
 	inactive time:	5588 ms
 	rx bytes:	5366
 	rx packets:	65
@@ -309,7 +309,7 @@ Station 00:6f:77:6c:32:00 (on owl0)
 
 ### Transmission/Receivement test
 Finally, we can do the ping test:
-1. To perform a ping test between two STAs (`owl1` and `owl2`), use the following command:
+1. To perform a ping test between two STAs (`vw1` and `vw2`), use the following command:
 ```shell
 $ sudo ip netns exec ns1 ping -c 4 10.0.0.3
 ```
@@ -327,7 +327,7 @@ PING 10.0.0.3 (10.0.0.3) 56(84) bytes of data.
 rtt min/avg/max/mdev = 0.082/0.138/0.188/0.037 ms
 ```
 
-2. To perform a ping test between the AP (`owl0`) and a STA (`owl2`), execute the following command:
+2. To perform a ping test between the AP (`vw0`) and a STA (`vw2`), execute the following command:
 ```shell
 $ sudo ip netns exec ns2 ping -c 4 10.0.0.1
 ```
@@ -374,13 +374,13 @@ We can use `vwifi-tool` to set or unset blocklist for vwifi, multiple options ar
 
 Set the blocklist pair using vwifi-tool like the following
 ```
-$ ./vwifi-tool -d owl2 -s owl1
+$ ./vwifi-tool -d vw2 -s vw1
 ```
 You should see the following output, including your blocklist which will be sent to vwifi
 ```
 vwifi status : live
 blocklist:
-owl2 blocks owl1
+vw2 blocks vw1
 Configuring blocklist for vwifi...
 Message from vwifi: vwifi has received your blocklist
 ```
@@ -569,27 +569,27 @@ insmod vwifi.ko station=1
 #### Setting Network Interface
 Start the network interface:
 ```shell
-ip link set owl0 up
+ip link set vw0 up
 ```
 And assign an IP address. Note that, we should assign different IP addresses (but the same subnet) for every network interface in the three VMs:
 ```shell
-ip addr add <IP address/netmask> dev owl0
+ip addr add <IP address/netmask> dev vw0
 ```
 ### Start `hostapd` and `wpa_supplicant`
 In our testing environment, the HostAP mode interface is in VM1, so running `hostapd` on VM1:
 ```shell
-hostapd -i owl0 -B hostapd.conf
+hostapd -i vw0 -B hostapd.conf
 ```
 And running `wpa_supplicant` on the other two VMs:
 ```shell
-wpa_supplicant -i owl0 -B -c wpa_supplicant.conf
+wpa_supplicant -i vw0 -B -c wpa_supplicant.conf
 ```
 
 For now, the two STA mode interfaces in VM1 and VM2 should have been connected to the AP mode interface in VM0. 
 
 For validating the connection for the STA mode network interface, use the following command:
 ```shell
-iw dev owl0 link
+iw dev vw0 link
 ```
 ### Ping Test
 In VM1, we can ping the network interfaces in VM2 and VM3:
