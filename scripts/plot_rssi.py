@@ -16,7 +16,7 @@ if __name__ == '__main__':
 
     fig = plt.figure()
     ax = fig.add_subplot(1, 1, 1)
-    ax.set_title('RSSI of sta owl0')
+    ax.set_title('RSSI of sta vw0')
     ax.set_xlabel('times get_station called')
     ax.set_ylabel('dBm')
 

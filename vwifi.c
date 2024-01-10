@@ -21,7 +21,7 @@ MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
 MODULE_DESCRIPTION("virtual cfg80211 driver");
 
-#define NAME_PREFIX "owl"
+#define NAME_PREFIX "vw"
 #define NDEV_NAME NAME_PREFIX "%d"
 
 #define DOT11_MGMT_HDR_LEN 24      /* d11 management header len */
@@ -32,30 +32,30 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 
 #define SCAN_TIMEOUT_MS 100 /*< millisecond */
 
-/* Note: owl_cipher_suites is an array of int defining which cipher suites
+/* Note: vwifi_cipher_suites is an array of int defining which cipher suites
  * are supported. A pointer to this array and the number of entries is passed
  * on to upper layers.
  */
-static const u32 owl_cipher_suites[] = {
+static const u32 vwifi_cipher_suites[] = {
     WLAN_CIPHER_SUITE_WEP40,
     WLAN_CIPHER_SUITE_WEP104,
     WLAN_CIPHER_SUITE_TKIP,
     WLAN_CIPHER_SUITE_CCMP,
 };
 
-struct owl_packet {
+struct vwifi_packet {
     int datalen;
     u8 data[ETH_DATA_LEN];
     struct list_head list;
 };
 
-enum vwifi_state { OWL_READY, OWL_SHUTDOWN };
+enum vwifi_state { VWIFI_READY, VWIFI_SHUTDOWN };
 
-/* Context for the whole program, so there's only single owl_context
+/* Context for the whole program, so there's only single vwifi_context
  * regardless of the number of virtual interfaces. Fields in the structure
  * are interface-independent.
  */
-struct owl_context {
+struct vwifi_context {
     /* We may not need this lock because vif_list would not change during
      * the whole lifetime.
      */
@@ -72,10 +72,10 @@ static DEFINE_SPINLOCK(vif_list_lock);
 enum sme_state { SME_DISCONNECTED, SME_CONNECTING, SME_CONNECTED };
 
 /* Virtual interface pointed to by netdev_priv(). Fields in the structure are
- * interface-dependent. Every interface has its own owl_vif, regardless of the
+ * interface-dependent. Every interface has its own vwifi_vif, regardless of the
  * interface mode (STA, AP, Ad-hoc...).
  */
-struct owl_vif {
+struct vwifi_vif {
     struct wireless_dev wdev;
     struct net_device *ndev;
     struct net_device_stats stats;
@@ -86,10 +86,10 @@ struct owl_vif {
     u8 ssid[IEEE80211_MAX_SSID_LEN];
 
     struct list_head rx_queue; /**< Head of received packet queue */
-    /* Store all owl_vif which is in the same BSS (AP will be the head). */
+    /* Store all vwifi_vif which is in the same BSS (AP will be the head). */
     struct list_head bss_list;
-    /* List entry for maintaining all owl_vif, which can be accessed via
-     * owl->vif_list.
+    /* List entry for maintaining all vwifi_vif, which can be accessed via
+     * vwifi->vif_list.
      */
     struct list_head list;
 
@@ -114,13 +114,13 @@ struct owl_vif {
             struct work_struct ws_scan, ws_scan_timeout;
 
             /* For quickly finding the AP */
-            struct owl_vif *ap;
+            struct vwifi_vif *ap;
         };
         /* Structure for AP mode */
         struct {
             bool ap_enabled;
             bool privacy;
-            /* List node for storing AP (owl->ap_list is the head),
+            /* List node for storing AP (vwifi->ap_list is the head),
              * this field is for interface in AP mode.
              */
             struct list_head ap_list;
@@ -154,7 +154,7 @@ module_param(station, int, 0444);
 MODULE_PARM_DESC(station, "Number of virtual interfaces running in STA mode.");
 
 /* Global context */
-static struct owl_context *owl = NULL;
+static struct vwifi_context *vwifi = NULL;
 
 /* Blocklist content */
 #define MAX_BLACKLIST_SIZE 1024
@@ -163,12 +163,12 @@ static struct sock *nl_sk = NULL;
 
 static int blocklist_check(char *dest, char *source)
 {
-    if (!owl->blocklist || !*(owl->blocklist))
+    if (!vwifi->blocklist || !*(vwifi->blocklist))
         return 0;
 
     char *user_input =
-        kmalloc(sizeof(char) * (strlen(owl->blocklist) + 1), GFP_KERNEL);
-    strncpy(user_input, owl->blocklist, strlen(owl->blocklist));
+        kmalloc(sizeof(char) * (strlen(vwifi->blocklist) + 1), GFP_KERNEL);
+    strncpy(user_input, vwifi->blocklist, strlen(vwifi->blocklist));
 
     char *token = strsep(&user_input, "\n");
     while (token) {
@@ -189,12 +189,13 @@ static int blocklist_check(char *dest, char *source)
 
 static void blocklist_load(char *blist)
 {
-    if (!owl->blocklist) {
-        pr_info("owl->blocklist have to be kmalloc first\n");
+    if (!vwifi->blocklist) {
+        pr_info("vwifi->blocklist have to be kmalloc first\n");
         return;
     }
-    memset(owl->blocklist, '\0', MAX_BLACKLIST_SIZE); /* clear the blocklist */
-    strncpy(owl->blocklist, blist, strlen(blist));
+    memset(vwifi->blocklist, '\0',
+           MAX_BLACKLIST_SIZE); /* clear the blocklist */
+    strncpy(vwifi->blocklist, blist, strlen(blist));
 }
 
 static void blocklist_nl_recv(struct sk_buff *skb)
@@ -369,15 +370,15 @@ struct bss_sta_entry {
 };
 
 /* helper function to retrieve vif from net_device */
-static inline struct owl_vif *ndev_get_owl_vif(struct net_device *ndev)
+static inline struct vwifi_vif *ndev_get_vwifi_vif(struct net_device *ndev)
 {
-    return (struct owl_vif *) netdev_priv(ndev);
+    return (struct vwifi_vif *) netdev_priv(ndev);
 }
 
 /* helper function to retrieve vif from wireless_dev */
-static inline struct owl_vif *wdev_get_owl_vif(struct wireless_dev *wdev)
+static inline struct vwifi_vif *wdev_get_vwifi_vif(struct wireless_dev *wdev)
 {
-    return container_of(wdev, struct owl_vif, wdev);
+    return container_of(wdev, struct vwifi_vif, wdev);
 }
 
 static inline u32 vwifi_mac_to_32(const u8 *mac)
@@ -438,11 +439,11 @@ static inline s32 rand_int_smooth(s32 low, s32 up, s32 seed)
  * and "informs" the kernel about the "new" BSS. Most of the code is copied from
  * the upcoming inform_dummy_bss function.
  */
-static void inform_bss(struct owl_vif *vif)
+static void inform_bss(struct vwifi_vif *vif)
 {
-    struct owl_vif *ap;
+    struct vwifi_vif *ap;
 
-    list_for_each_entry (ap, &owl->ap_list, ap_list) {
+    list_for_each_entry (ap, &vwifi->ap_list, ap_list) {
         struct cfg80211_bss *bss = NULL;
         struct cfg80211_inform_bss data = {
             /* the only channel */
@@ -455,7 +456,7 @@ static void inform_bss(struct owl_vif *vif)
         if (ap->privacy)
             capability |= WLAN_CAPABILITY_PRIVACY;
 
-        pr_info("owl: %s performs scan, found %s (SSID: %s, BSSID: %pM)\n",
+        pr_info("vwifi: %s performs scan, found %s (SSID: %s, BSSID: %pM)\n",
                 vif->ndev->name, ap->ndev->name, ap->ssid, ap->bssid);
         pr_info("cap = %d, beacon_ie_len = %d\n", capability,
                 ap->beacon_ie_len);
@@ -480,11 +481,11 @@ static void inform_bss(struct owl_vif *vif)
     }
 }
 
-static void owl_beacon_inform_bss(struct owl_vif *ap,
-                                  struct owl_vif *sta,
-                                  struct cfg80211_inform_bss *bss_meta,
-                                  int capability,
-                                  u64 tsf)
+static void vwifi_beacon_inform_bss(struct vwifi_vif *ap,
+                                    struct vwifi_vif *sta,
+                                    struct cfg80211_inform_bss *bss_meta,
+                                    int capability,
+                                    u64 tsf)
 {
     struct cfg80211_bss *bss = NULL;
     bss_meta->signal = DBM_TO_MBM(rand_int_smooth(-100, -30, jiffies));
@@ -506,9 +507,9 @@ static void owl_beacon_inform_bss(struct owl_vif *ap,
  * custom BSS information and "notifies" the core about the "new"
  * BSS information.
  */
-static enum hrtimer_restart owl_beacon(struct hrtimer *timer)
+static enum hrtimer_restart vwifi_beacon(struct hrtimer *timer)
 {
-    struct owl_vif *vif = container_of(timer, struct owl_vif, beacon_timer);
+    struct vwifi_vif *vif = container_of(timer, struct vwifi_vif, beacon_timer);
 
     if (vif->wdev.iftype != NL80211_IFTYPE_AP &&
         vif->wdev.iftype != NL80211_IFTYPE_MESH_POINT &&
@@ -541,12 +542,12 @@ static enum hrtimer_restart owl_beacon(struct hrtimer *timer)
         capability |= WLAN_CAPABILITY_PRIVACY;
 
     spin_lock(&vif_list_lock);
-    struct owl_vif *sta;
-    list_for_each_entry (sta, &owl->vif_list, list) {
+    struct vwifi_vif *sta;
+    list_for_each_entry (sta, &vwifi->vif_list, list) {
         if (sta->wdev.iftype != NL80211_IFTYPE_STATION)
             continue;
 
-        owl_beacon_inform_bss(vif, sta, &bss_meta, capability, timestamp);
+        vwifi_beacon_inform_bss(vif, sta, &bss_meta, capability, timestamp);
     }
     spin_unlock(&vif_list_lock);
 
@@ -563,9 +564,9 @@ static enum hrtimer_restart owl_beacon(struct hrtimer *timer)
 
 static void vwifi_virtio_fill_vq(struct virtqueue *vq, u8 vnet_hdr_len);
 
-static int owl_ndo_open(struct net_device *dev)
+static int vwifi_ndo_open(struct net_device *dev)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(dev);
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(dev);
 
     netif_start_queue(dev);
 
@@ -574,10 +575,10 @@ static int owl_ndo_open(struct net_device *dev)
     return 0;
 }
 
-static int owl_ndo_stop(struct net_device *dev)
+static int vwifi_ndo_stop(struct net_device *dev)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(dev);
-    struct owl_packet *pkt, *is = NULL;
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(dev);
+    struct vwifi_packet *pkt, *is = NULL;
     list_for_each_entry_safe (pkt, is, &vif->rx_queue, list) {
         list_del(&pkt->list);
         kfree(pkt);
@@ -586,14 +587,14 @@ static int owl_ndo_stop(struct net_device *dev)
     return 0;
 }
 
-static struct net_device_stats *owl_ndo_get_stats(struct net_device *dev)
+static struct net_device_stats *vwifi_ndo_get_stats(struct net_device *dev)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(dev);
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(dev);
     return &vif->stats;
 }
 
-static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
-                                      struct net_device *dev);
+static netdev_tx_t vwifi_ndo_start_xmit(struct sk_buff *skb,
+                                        struct net_device *dev);
 
 /* Receive a packet: retrieve, encapsulate it in an skb, and perform the
  * following operations based on the interface mode:
@@ -606,24 +607,24 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
  *        then pass it to the protocol stack.
  *     3. Multicast: Perform the same operations as for broadcast.
  */
-static void owl_rx(struct net_device *dev)
+static void vwifi_rx(struct net_device *dev)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(dev);
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(dev);
     /* socket buffer will be sended to protocol stack */
     struct sk_buff *skb;
     /* socket buffer will be transmitted to another STA */
     struct sk_buff *skb1 = NULL;
-    struct owl_packet *pkt;
+    struct vwifi_packet *pkt;
 
     if (list_empty(&vif->rx_queue)) {
-        pr_info("owl rx: No packet in rx_queue\n");
+        pr_info("vwifi rx: No packet in rx_queue\n");
         return;
     }
 
     if (mutex_lock_interruptible(&vif->lock))
         goto pkt_free;
 
-    pkt = list_first_entry(&vif->rx_queue, struct owl_packet, list);
+    pkt = list_first_entry(&vif->rx_queue, struct vwifi_packet, list);
 
     vif->stats.rx_packets++;
     vif->stats.rx_bytes += pkt->datalen;
@@ -634,7 +635,7 @@ static void owl_rx(struct net_device *dev)
     /* Put raw packet into socket buffer */
     skb = dev_alloc_skb(pkt->datalen + 2);
     if (!skb) {
-        pr_info("owl rx: low on mem - packet dropped\n");
+        pr_info("vwifi rx: low on mem - packet dropped\n");
         vif->stats.rx_dropped++;
         goto pkt_free;
     }
@@ -651,7 +652,7 @@ static void owl_rx(struct net_device *dev)
          * STA except the source STA, and then passed to the protocol stack.
          */
         if (is_multicast_ether_addr(eth_hdr->h_dest)) {
-            pr_info("owl: is_multicast_ether_addr\n");
+            pr_info("vwifi: is_multicast_ether_addr\n");
             skb1 = skb_copy(skb, GFP_KERNEL);
         }
         /* Receiving a unicast packet */
@@ -666,8 +667,8 @@ static void owl_rx(struct net_device *dev)
         }
 
         if (skb1) {
-            pr_info("owl: AP %s relay:\n", vif->ndev->name);
-            owl_ndo_start_xmit(skb1, vif->ndev);
+            pr_info("vwifi: AP %s relay:\n", vif->ndev->name);
+            vwifi_ndo_start_xmit(skb1, vif->ndev);
         }
 
         /* Nothing to pass to protocol stack */
@@ -692,25 +693,25 @@ pkt_free:
     kfree(pkt);
 }
 
-static int __owl_ndo_start_xmit(struct owl_vif *vif,
-                                struct owl_vif *dest_vif,
-                                struct sk_buff *skb)
+static int __vwifi_ndo_start_xmit(struct vwifi_vif *vif,
+                                  struct vwifi_vif *dest_vif,
+                                  struct sk_buff *skb)
 {
-    struct owl_packet *pkt = NULL;
+    struct vwifi_packet *pkt = NULL;
     struct ethhdr *eth_hdr = (struct ethhdr *) skb->data;
     int datalen;
 
     if (vif->wdev.iftype == NL80211_IFTYPE_STATION) {
-        pr_info("owl: STA %s (%pM) send packet to AP %s (%pM)\n",
+        pr_info("vwifi: STA %s (%pM) send packet to AP %s (%pM)\n",
                 vif->ndev->name, eth_hdr->h_source, dest_vif->ndev->name,
                 eth_hdr->h_dest);
     } else if (vif->wdev.iftype == NL80211_IFTYPE_AP) {
-        pr_info("owl: AP %s (%pM) send packet to STA %s (%pM)\n",
+        pr_info("vwifi: AP %s (%pM) send packet to STA %s (%pM)\n",
                 vif->ndev->name, eth_hdr->h_source, dest_vif->ndev->name,
                 eth_hdr->h_dest);
     }
 
-    pkt = kmalloc(sizeof(struct owl_packet), GFP_KERNEL);
+    pkt = kmalloc(sizeof(struct vwifi_packet), GFP_KERNEL);
     if (!pkt) {
         pr_info("Ran out of memory allocating packet pool\n");
         return NETDEV_TX_OK;
@@ -738,17 +739,17 @@ static int __owl_ndo_start_xmit(struct owl_vif *vif,
     mutex_unlock(&vif->lock);
 
     if (dest_vif->wdev.iftype == NL80211_IFTYPE_STATION) {
-        pr_info("owl: STA %s (%pM) receive packet from AP %s (%pM)\n",
+        pr_info("vwifi: STA %s (%pM) receive packet from AP %s (%pM)\n",
                 dest_vif->ndev->name, eth_hdr->h_dest, vif->ndev->name,
                 eth_hdr->h_source);
     } else if (dest_vif->wdev.iftype == NL80211_IFTYPE_AP) {
-        pr_info("owl: AP %s (%pM) receive packet from STA %s (%pM)\n",
+        pr_info("vwifi: AP %s (%pM) receive packet from STA %s (%pM)\n",
                 dest_vif->ndev->name, eth_hdr->h_dest, vif->ndev->name,
                 eth_hdr->h_source);
     }
 
     /* Directly send to rx_queue, simulate the rx interrupt */
-    owl_rx(dest_vif->ndev);
+    vwifi_rx(dest_vif->ndev);
 
     return datalen;
 
@@ -759,16 +760,16 @@ error_before_rx_queue:
     return 0;
 }
 
-static netdev_tx_t vwifi_virtio_tx(struct owl_vif *vif, struct sk_buff *skb);
+static netdev_tx_t vwifi_virtio_tx(struct vwifi_vif *vif, struct sk_buff *skb);
 
 /* Network packet transmit.
  * Callback called by the kernel when packets need to be sent.
  */
-static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
-                                      struct net_device *dev)
+static netdev_tx_t vwifi_ndo_start_xmit(struct sk_buff *skb,
+                                        struct net_device *dev)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(dev);
-    struct owl_vif *dest_vif = NULL;
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(dev);
+    struct vwifi_vif *dest_vif = NULL;
     struct ethhdr *eth_hdr = (struct ethhdr *) skb->data;
     unsigned long flags;
     int err;
@@ -789,14 +790,14 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
         if (vif->ap && vif->ap->ap_enabled) {
             dest_vif = vif->ap;
 
-            if (__owl_ndo_start_xmit(vif, dest_vif, skb))
+            if (__vwifi_ndo_start_xmit(vif, dest_vif, skb))
                 count++;
         }
     }
     /* TX by interface of AP mode */
     else if (vif->wdev.iftype == NL80211_IFTYPE_AP) {
         /* Find the source interface */
-        struct owl_vif *src_vif;
+        struct vwifi_vif *src_vif;
         list_for_each_entry (src_vif, &vif->bss_list, bss_list) {
             if (ether_addr_equal(eth_hdr->h_source, src_vif->ndev->dev_addr))
                 break;
@@ -815,7 +816,7 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
                 if (blocklist_check(dest_vif->ndev->name, src_vif->ndev->name))
                     continue;
 
-                if (__owl_ndo_start_xmit(vif, dest_vif, skb))
+                if (__vwifi_ndo_start_xmit(vif, dest_vif, skb))
                     count++;
             }
         }
@@ -826,7 +827,7 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
                                      dest_vif->ndev->dev_addr)) {
                     if (!blocklist_check(dest_vif->ndev->name,
                                          src_vif->ndev->name) &&
-                        __owl_ndo_start_xmit(vif, dest_vif, skb))
+                        __vwifi_ndo_start_xmit(vif, dest_vif, skb))
                         count++;
                     break;
                 }
@@ -847,19 +848,19 @@ static netdev_tx_t owl_ndo_start_xmit(struct sk_buff *skb,
  * It should have at least ndo_start_xmit functions called for packet to be
  * sent.
  */
-static struct net_device_ops owl_ndev_ops = {
-    .ndo_open = owl_ndo_open,
-    .ndo_stop = owl_ndo_stop,
-    .ndo_start_xmit = owl_ndo_start_xmit,
-    .ndo_get_stats = owl_ndo_get_stats,
+static struct net_device_ops vwifi_ndev_ops = {
+    .ndo_open = vwifi_ndo_open,
+    .ndo_stop = vwifi_ndo_stop,
+    .ndo_start_xmit = vwifi_ndo_start_xmit,
+    .ndo_get_stats = vwifi_ndo_get_stats,
 };
 
 /* Inform the "dummy" BSS to kernel and call cfg80211_scan_done() to finish
  * scan.
  */
-static void owl_scan_timeout_work(struct work_struct *w)
+static void vwifi_scan_timeout_work(struct work_struct *w)
 {
-    struct owl_vif *vif = container_of(w, struct owl_vif, ws_scan_timeout);
+    struct vwifi_vif *vif = container_of(w, struct vwifi_vif, ws_scan_timeout);
     struct cfg80211_scan_info info = {
         /* if scan was aborted by user (calling cfg80211_ops->abort_scan) or by
          * any driver/hardware issue - field should be set to "true"
@@ -885,24 +886,25 @@ static void owl_scan_timeout_work(struct work_struct *w)
  * the timeout work and offloads the job of informing "dummy" BSS to kernel
  * onto it.
  */
-static void owl_scan_timeout(struct timer_list *t)
+static void vwifi_scan_timeout(struct timer_list *t)
 {
-    struct owl_vif *vif = container_of(t, struct owl_vif, scan_timeout);
+    struct vwifi_vif *vif = container_of(t, struct vwifi_vif, scan_timeout);
 
     if (vif->scan_request)
         schedule_work(&vif->ws_scan_timeout);
 }
 
-static void vwifi_virtio_scan_request(struct owl_vif *vif);
+static void vwifi_virtio_scan_request(struct vwifi_vif *vif);
 
 /* Scan routine. It simulates a fake BSS scan (in fact, it does nothing) and
  * sets a scan timer to start from then. Once the timer timeouts, the timeout
- * routine owl_scan_timeout() will be invoked. This routine schedules a timeout
- * work that informs the kernel about the "dummy" BSS and completes the scan.
+ * routine vwifi_scan_timeout() will be invoked. This routine schedules a
+ * timeout work that informs the kernel about the "dummy" BSS and completes the
+ * scan.
  */
-static void owl_scan_routine(struct work_struct *w)
+static void vwifi_scan_routine(struct work_struct *w)
 {
-    struct owl_vif *vif = container_of(w, struct owl_vif, ws_scan);
+    struct vwifi_vif *vif = container_of(w, struct vwifi_vif, ws_scan);
     unsigned long flags;
 
     spin_lock_irqsave(&vwifi_virtio_lock, flags);
@@ -925,12 +927,12 @@ static void owl_scan_routine(struct work_struct *w)
     mod_timer(&vif->scan_timeout, jiffies + msecs_to_jiffies(SCAN_TIMEOUT_MS));
 }
 
-static void vwifi_virtio_connect_request(struct owl_vif *vif);
+static void vwifi_virtio_connect_request(struct vwifi_vif *vif);
 
-static void owl_connect_routine(struct work_struct *w)
+static void vwifi_connect_routine(struct work_struct *w)
 {
-    struct owl_vif *vif = container_of(w, struct owl_vif, ws_connect);
-    struct owl_vif *ap = NULL;
+    struct vwifi_vif *vif = container_of(w, struct vwifi_vif, ws_connect);
+    struct vwifi_vif *ap = NULL;
     struct station_info *sinfo;
     unsigned long flags;
 
@@ -948,9 +950,9 @@ static void owl_connect_routine(struct work_struct *w)
         return;
 
     /* Finding the AP by request SSID */
-    list_for_each_entry (ap, &owl->ap_list, ap_list) {
+    list_for_each_entry (ap, &vwifi->ap_list, ap_list) {
         if (!memcmp(ap->ssid, vif->req_ssid, ap->ssid_len)) {
-            pr_info("owl: %s is connected to AP %s (SSID: %s, BSSID: %pM)\n",
+            pr_info("vwifi: %s is connected to AP %s (SSID: %s, BSSID: %pM)\n",
                     vif->ndev->name, ap->ndev->name, ap->ssid, ap->bssid);
 
             if (mutex_lock_interruptible(&ap->lock))
@@ -998,7 +1000,7 @@ static void owl_connect_routine(struct work_struct *w)
     }
 
     /* SSID not found */
-    pr_info("owl: SSID %s not found\n", vif->req_ssid);
+    pr_info("vwifi: SSID %s not found\n", vif->req_ssid);
 
     cfg80211_connect_timeout(vif->ndev, NULL, NULL, 0, GFP_KERNEL,
                              NL80211_TIMEOUT_SCAN);
@@ -1006,7 +1008,7 @@ static void owl_connect_routine(struct work_struct *w)
     mutex_unlock(&vif->lock);
 }
 
-static void vwifi_virtio_disconnect(struct owl_vif *vif);
+static void vwifi_virtio_disconnect(struct vwifi_vif *vif);
 
 /* Invoke cfg80211_disconnected() that informs the kernel that disconnect is
  * complete. Overall disconnect may call cfg80211_connect_timeout() if
@@ -1014,9 +1016,9 @@ static void vwifi_virtio_disconnect(struct owl_vif *vif);
  * it simple as possible. This routine is called through workqueue, when the
  * kernel asks to disconnect through cfg80211_ops.
  */
-static void owl_disconnect_routine(struct work_struct *w)
+static void vwifi_disconnect_routine(struct work_struct *w)
 {
-    struct owl_vif *vif = container_of(w, struct owl_vif, ws_disconnect);
+    struct vwifi_vif *vif = container_of(w, struct vwifi_vif, ws_disconnect);
     unsigned long flags;
 
     spin_lock_irqsave(&vwifi_virtio_lock, flags);
@@ -1029,7 +1031,7 @@ static void owl_disconnect_routine(struct work_struct *w)
 
     spin_unlock_irqrestore(&vwifi_virtio_lock, flags);
 
-    pr_info("owl: %s disconnected from AP %s\n", vif->ndev->name,
+    pr_info("vwifi: %s disconnected from AP %s\n", vif->ndev->name,
             vif->ap->ndev->name);
 
     if (mutex_lock_interruptible(&vif->lock))
@@ -1043,7 +1045,7 @@ static void owl_disconnect_routine(struct work_struct *w)
     vif->sme_state = SME_DISCONNECTED;
 
     /* AP cleanup stuff */
-    if (owl->state != OWL_SHUTDOWN) {
+    if (vwifi->state != VWIFI_SHUTDOWN) {
         if (mutex_lock_interruptible(&vif->ap->lock)) {
             mutex_unlock(&vif->lock);
             return;
@@ -1066,9 +1068,10 @@ static void owl_disconnect_routine(struct work_struct *w)
  * This callback should initiate scan routine(through work_struct) and exit with
  * 0 if everything is ok.
  */
-static int owl_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
+static int vwifi_scan(struct wiphy *wiphy,
+                      struct cfg80211_scan_request *request)
 {
-    struct owl_vif *vif = wdev_get_owl_vif(request->wdev);
+    struct vwifi_vif *vif = wdev_get_vwifi_vif(request->wdev);
 
     if (mutex_lock_interruptible(&vif->lock))
         return -ERESTARTSYS;
@@ -1097,11 +1100,11 @@ static int owl_scan(struct wiphy *wiphy, struct cfg80211_scan_request *request)
  * cfg80211_connect_bss()/cfg80211_connect_result()/cfg80211_connect_done() or
  * cfg80211_connect_timeout().
  */
-static int owl_connect(struct wiphy *wiphy,
-                       struct net_device *dev,
-                       struct cfg80211_connect_params *sme)
+static int vwifi_connect(struct wiphy *wiphy,
+                         struct net_device *dev,
+                         struct cfg80211_connect_params *sme)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(dev);
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(dev);
 
     if (mutex_lock_interruptible(&vif->lock))
         return -ERESTARTSYS;
@@ -1134,11 +1137,11 @@ static int owl_connect(struct wiphy *wiphy,
  * call cfg80211_disconnected() to inform the kernel that disconnection is
  * complete.
  */
-static int owl_disconnect(struct wiphy *wiphy,
-                          struct net_device *dev,
-                          u16 reason_code)
+static int vwifi_disconnect(struct wiphy *wiphy,
+                            struct net_device *dev,
+                            u16 reason_code)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(dev);
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(dev);
 
     if (mutex_lock_interruptible(&vif->lock))
         return -ERESTARTSYS;
@@ -1169,17 +1172,17 @@ static int owl_disconnect(struct wiphy *wiphy,
  * such as inactive time and elapsed time since the last connection to an AP.
  * This callback is invoked when the rtnl lock has been acquired.
  */
-static int owl_get_station(struct wiphy *wiphy,
-                           struct net_device *dev,
-                           const u8 *mac,
-                           struct station_info *sinfo)
+static int vwifi_get_station(struct wiphy *wiphy,
+                             struct net_device *dev,
+                             const u8 *mac,
+                             struct station_info *sinfo)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(dev);
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(dev);
 
     bool found_sta = false;
     switch (dev->ieee80211_ptr->iftype) {
     case NL80211_IFTYPE_AP:;
-        struct owl_vif *sta_vif = NULL;
+        struct vwifi_vif *sta_vif = NULL;
         list_for_each_entry (sta_vif, &vif->bss_list, bss_list) {
             if (!memcmp(mac, sta_vif->ndev->dev_addr, ETH_ALEN)) {
                 found_sta = true;
@@ -1194,7 +1197,8 @@ static int owl_get_station(struct wiphy *wiphy,
             found_sta = true;
         break;
     default:
-        pr_info("owl: invalid interface type %u\n", dev->ieee80211_ptr->iftype);
+        pr_info("vwifi: invalid interface type %u\n",
+                dev->ieee80211_ptr->iftype);
         return -EINVAL;
     }
 
@@ -1239,18 +1243,18 @@ static int owl_get_station(struct wiphy *wiphy,
 }
 
 /* dump station callback -- resume dump at index @idx */
-static int owl_dump_station(struct wiphy *wiphy,
-                            struct net_device *dev,
-                            int idx,
-                            u8 *mac,
-                            struct station_info *sinfo)
+static int vwifi_dump_station(struct wiphy *wiphy,
+                              struct net_device *dev,
+                              int idx,
+                              u8 *mac,
+                              struct station_info *sinfo)
 {
-    struct owl_vif *ap_vif = ndev_get_owl_vif(dev);
+    struct vwifi_vif *ap_vif = ndev_get_vwifi_vif(dev);
 
     pr_info("Dump station at the idx %d\n", idx);
 
     int ret = -ENONET;
-    struct owl_vif *sta_vif = NULL;
+    struct vwifi_vif *sta_vif = NULL;
     int i = 0;
 
     list_for_each_entry (sta_vif, &ap_vif->bss_list, bss_list) {
@@ -1267,7 +1271,7 @@ static int owl_dump_station(struct wiphy *wiphy,
     ret = 0;
 
     memcpy(mac, sta_vif->ndev->dev_addr, ETH_ALEN);
-    return owl_get_station(wiphy, dev, mac, sinfo);
+    return vwifi_get_station(wiphy, dev, mac, sinfo);
 }
 
 static void vwifi_virtio_scan_complete(struct timer_list *t);
@@ -1276,20 +1280,20 @@ static void vwifi_virtio_scan_complete(struct timer_list *t);
  * interfaces. The interface mode is set to STA mode. To change the interface
  * type, use the change_virtual_intf() function.
  */
-static struct wireless_dev *owinterface_add(struct wiphy *wiphy, int if_idx)
+static struct wireless_dev *vwifi_interface_add(struct wiphy *wiphy, int if_idx)
 {
     struct net_device *ndev = NULL;
-    struct owl_vif *vif = NULL;
+    struct vwifi_vif *vif = NULL;
 
     /* allocate network device context. */
-    ndev = alloc_netdev(sizeof(struct owl_vif), NDEV_NAME, NET_NAME_ENUM,
+    ndev = alloc_netdev(sizeof(struct vwifi_vif), NDEV_NAME, NET_NAME_ENUM,
                         ether_setup);
 
     if (!ndev)
         goto error_alloc_ndev;
 
     /* fill private data of network context. */
-    vif = ndev_get_owl_vif(ndev);
+    vif = ndev_get_vwifi_vif(ndev);
     vif->ndev = ndev;
 
     /* fill wireless_dev context.
@@ -1302,7 +1306,7 @@ static struct wireless_dev *owinterface_add(struct wiphy *wiphy, int if_idx)
     vif->ndev->ieee80211_ptr = &vif->wdev;
 
     /* set network device hooks. should implement ndo_start_xmit() at least */
-    vif->ndev->netdev_ops = &owl_ndev_ops;
+    vif->ndev->netdev_ops = &vwifi_ndev_ops;
 
     /* Add here proper net_device initialization */
     vif->ndev->features |= NETIF_F_HW_CSUM;
@@ -1344,13 +1348,13 @@ static struct wireless_dev *owinterface_add(struct wiphy *wiphy, int if_idx)
     mutex_init(&vif->bss_sta_table_lock);
 
     /* Initialize timer of scan_timeout */
-    timer_setup(&vif->scan_timeout, owl_scan_timeout, 0);
+    timer_setup(&vif->scan_timeout, vwifi_scan_timeout, 0);
     timer_setup(&vif->scan_complete, vwifi_virtio_scan_complete, 0);
 
-    INIT_WORK(&vif->ws_connect, owl_connect_routine);
-    INIT_WORK(&vif->ws_disconnect, owl_disconnect_routine);
-    INIT_WORK(&vif->ws_scan, owl_scan_routine);
-    INIT_WORK(&vif->ws_scan_timeout, owl_scan_timeout_work);
+    INIT_WORK(&vif->ws_connect, vwifi_connect_routine);
+    INIT_WORK(&vif->ws_disconnect, vwifi_disconnect_routine);
+    INIT_WORK(&vif->ws_scan, vwifi_scan_routine);
+    INIT_WORK(&vif->ws_scan_timeout, vwifi_scan_timeout_work);
 
     /* Initialize rx_queue */
     INIT_LIST_HEAD(&vif->rx_queue);
@@ -1359,7 +1363,7 @@ static struct wireless_dev *owinterface_add(struct wiphy *wiphy, int if_idx)
 
     /* Add vif into global vif_list */
     spin_lock_bh(&vif_list_lock);
-    list_add_tail(&vif->list, &owl->vif_list);
+    list_add_tail(&vif->list, &vwifi->vif_list);
     spin_unlock_bh(&vif_list_lock);
 
     return &vif->wdev;
@@ -1373,10 +1377,10 @@ error_alloc_ndev:
 }
 
 /* Called by kernel when user decided to change the interface type. */
-static int owl_change_iface(struct wiphy *wiphy,
-                            struct net_device *ndev,
-                            enum nl80211_iftype type,
-                            struct vif_params *params)
+static int vwifi_change_iface(struct wiphy *wiphy,
+                              struct net_device *ndev,
+                              enum nl80211_iftype type,
+                              struct vif_params *params)
 {
     switch (type) {
     case NL80211_IFTYPE_STATION:
@@ -1384,7 +1388,7 @@ static int owl_change_iface(struct wiphy *wiphy,
         ndev->ieee80211_ptr->iftype = type;
         break;
     default:
-        pr_info("owl: invalid interface type %u\n", type);
+        pr_info("vwifi: invalid interface type %u\n", type);
         return -EINVAL;
     }
 
@@ -1393,20 +1397,20 @@ static int owl_change_iface(struct wiphy *wiphy,
 
 /* Called by the kernel when the user wants to create an Access Point.
  * Currently, it adds an SSID to the SSID table to emulate the AP signal and
- * records the SSID in the owl_context.
+ * records the SSID in the vwifi_context.
  */
-static int owl_start_ap(struct wiphy *wiphy,
-                        struct net_device *ndev,
-                        struct cfg80211_ap_settings *settings)
+static int vwifi_start_ap(struct wiphy *wiphy,
+                          struct net_device *ndev,
+                          struct cfg80211_ap_settings *settings)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(ndev);
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(ndev);
     struct bss_sta_entry *sta_ent;
     int ie_offset = DOT11_MGMT_HDR_LEN + DOT11_BCN_PRB_FIXED_LEN;
     int head_ie_len, tail_ie_len;
     unsigned long flags;
     u32 key;
 
-    pr_info("owl: %s start acting in AP mode.\n", ndev->name);
+    pr_info("vwifi: %s start acting in AP mode.\n", ndev->name);
     pr_info("ctrlchn=%d, center=%d, bw=%d, beacon_interval=%d, dtim_period=%d,",
             settings->chandef.chan->hw_value, settings->chandef.center_freq1,
             settings->chandef.width, settings->beacon_interval,
@@ -1427,7 +1431,7 @@ static int owl_start_ap(struct wiphy *wiphy,
     INIT_LIST_HEAD(&vif->bss_list);
 
     /* Add AP to global ap_list */
-    list_add_tail(&vif->ap_list, &owl->ap_list);
+    list_add_tail(&vif->ap_list, &vwifi->ap_list);
 
     vif->ap_enabled = true;
 
@@ -1458,7 +1462,7 @@ static int owl_start_ap(struct wiphy *wiphy,
     }
 
     if (settings->chandef.chan) {
-        pr_info("owl: %s center freq: %d\n", ndev->name,
+        pr_info("vwifi: %s center freq: %d\n", ndev->name,
                 settings->chandef.chan->center_freq);
         vif->channel = settings->chandef.chan;
     }
@@ -1473,9 +1477,9 @@ static int owl_start_ap(struct wiphy *wiphy,
     vif->beacon_int = beacon_int * 1024;
 
     /* Initialize hrtimer of beacon */
-    pr_info("owl: init beacon_timer.\n");
+    pr_info("vwifi: init beacon_timer.\n");
     hrtimer_init(&vif->beacon_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_SOFT);
-    vif->beacon_timer.function = owl_beacon;
+    vif->beacon_timer.function = vwifi_beacon;
 
     if (!hrtimer_is_queued(&vif->beacon_timer)) {
         u64 tsf, until_tbtt;
@@ -1510,27 +1514,27 @@ static int owl_start_ap(struct wiphy *wiphy,
     return 0;
 }
 
-static void vwifi_virtio_disconnect_tx(struct owl_vif *vif);
+static void vwifi_virtio_disconnect_tx(struct vwifi_vif *vif);
 
 /* Called by the kernel when there is a need to "stop" from AP mode. It uses
  * the SSID to remove the AP node from the SSID table.
  */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2)
-static int owl_stop_ap(struct wiphy *wiphy,
-                       struct net_device *ndev,
-                       unsigned int link_id)
+static int vwifi_stop_ap(struct wiphy *wiphy,
+                         struct net_device *ndev,
+                         unsigned int link_id)
 #else
-static int owl_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
+static int vwifi_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
 #endif
 {
-    struct owl_vif *vif = ndev_get_owl_vif(ndev);
-    struct owl_vif *pos = NULL, *safe = NULL;
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(ndev);
+    struct vwifi_vif *pos = NULL, *safe = NULL;
     struct bss_sta_entry *sta_ent;
     struct hlist_node *tmp;
     unsigned long flags;
     int bkt;
 
-    pr_info("owl: %s stop acting in AP mode.\n", ndev->name);
+    pr_info("vwifi: %s stop acting in AP mode.\n", ndev->name);
 
     spin_lock_irqsave(&vwifi_virtio_lock, flags);
     if (vwifi_virtio_enabled) {
@@ -1547,7 +1551,7 @@ static int owl_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
 
     spin_unlock_irqrestore(&vwifi_virtio_lock, flags);
 
-    if (owl->state == OWL_SHUTDOWN) {
+    if (vwifi->state == VWIFI_SHUTDOWN) {
         hrtimer_cancel(&vif->beacon_timer);
 
         /* Destroy bss_list first */
@@ -1555,12 +1559,12 @@ static int owl_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
             list_del(&pos->bss_list);
 
         /* Remove ap from global ap_list */
-        if (mutex_lock_interruptible(&owl->lock))
+        if (mutex_lock_interruptible(&vwifi->lock))
             return -ERESTARTSYS;
 
         list_del(&vif->ap_list);
 
-        mutex_unlock(&owl->lock);
+        mutex_unlock(&vwifi->lock);
     }
 
     vif->ap_enabled = false;
@@ -1568,11 +1572,11 @@ static int owl_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
     return 0;
 }
 
-static int owl_change_beacon(struct wiphy *wiphy,
-                             struct net_device *ndev,
-                             struct cfg80211_beacon_data *info)
+static int vwifi_change_beacon(struct wiphy *wiphy,
+                               struct net_device *ndev,
+                               struct cfg80211_beacon_data *info)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(ndev);
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(ndev);
     int ie_offset = DOT11_MGMT_HDR_LEN + DOT11_BCN_PRB_FIXED_LEN;
     int head_ie_len, tail_ie_len;
 
@@ -1603,73 +1607,73 @@ static int owl_change_beacon(struct wiphy *wiphy,
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-static int owl_add_key(struct wiphy *wiphy,
-                       struct net_device *ndev,
-                       int link_id,
-                       u8 key_idx,
-                       bool pairwise,
-                       const u8 *mac_addr,
-                       struct key_params *params)
+static int vwifi_add_key(struct wiphy *wiphy,
+                         struct net_device *ndev,
+                         int link_id,
+                         u8 key_idx,
+                         bool pairwise,
+                         const u8 *mac_addr,
+                         struct key_params *params)
 #else
-static int owl_add_key(struct wiphy *wiphy,
-                       struct net_device *ndev,
-                       u8 key_idx,
-                       bool pairwise,
-                       const u8 *mac_addr,
-                       struct key_params *params)
+static int vwifi_add_key(struct wiphy *wiphy,
+                         struct net_device *ndev,
+                         u8 key_idx,
+                         bool pairwise,
+                         const u8 *mac_addr,
+                         struct key_params *params)
 #endif
 {
     return 0;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-static int owl_del_key(struct wiphy *wiphy,
-                       struct net_device *ndev,
-                       int link_id,
-                       u8 key_idx,
-                       bool pairwise,
-                       const u8 *mac_addr)
+static int vwifi_del_key(struct wiphy *wiphy,
+                         struct net_device *ndev,
+                         int link_id,
+                         u8 key_idx,
+                         bool pairwise,
+                         const u8 *mac_addr)
 #else
-static int owl_del_key(struct wiphy *wiphy,
-                       struct net_device *ndev,
-                       u8 key_idx,
-                       bool pairwise,
-                       const u8 *mac_addr)
+static int vwifi_del_key(struct wiphy *wiphy,
+                         struct net_device *ndev,
+                         u8 key_idx,
+                         bool pairwise,
+                         const u8 *mac_addr)
 #endif
 {
     return 0;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-static int owl_set_default_key(struct wiphy *wiphy,
-                               struct net_device *ndev,
-                               int link_id,
-                               u8 key_idx,
-                               bool unicast,
-                               bool multicast)
+static int vwifi_set_default_key(struct wiphy *wiphy,
+                                 struct net_device *ndev,
+                                 int link_id,
+                                 u8 key_idx,
+                                 bool unicast,
+                                 bool multicast)
 #else
-static int owl_set_default_key(struct wiphy *wiphy,
-                               struct net_device *ndev,
-                               u8 key_idx,
-                               bool unicast,
-                               bool multicast)
+static int vwifi_set_default_key(struct wiphy *wiphy,
+                                 struct net_device *ndev,
+                                 u8 key_idx,
+                                 bool unicast,
+                                 bool multicast)
 #endif
 {
     return 0;
 }
 
-static void vwifi_virtio_sta_entry_request(struct owl_vif *vif,
+static void vwifi_virtio_sta_entry_request(struct vwifi_vif *vif,
                                            const u8 *bssid);
-static void vwifi_virtio_sta_entry_response(struct owl_vif *vif,
+static void vwifi_virtio_sta_entry_response(struct vwifi_vif *vif,
                                             enum VWIFI_STA_ENTRY_CMD cmd,
                                             const u8 *sta);
 
-static int owl_change_station(struct wiphy *wiphy,
-                              struct net_device *ndev,
-                              const u8 *mac,
-                              struct station_parameters *params)
+static int vwifi_change_station(struct wiphy *wiphy,
+                                struct net_device *ndev,
+                                const u8 *mac,
+                                struct station_parameters *params)
 {
-    struct owl_vif *vif = ndev_get_owl_vif(ndev);
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(ndev);
     struct bss_sta_entry *sta_entry;
     unsigned long flags;
     u32 key;
@@ -1734,9 +1738,9 @@ static int owl_change_station(struct wiphy *wiphy,
 }
 
 /* Unregister and free a virtual interface identified by @vif->ndev. */
-static int owl_delete_interface(struct owl_vif *vif)
+static int vwifi_delete_interface(struct vwifi_vif *vif)
 {
-    struct owl_packet *pkt = NULL, *safe = NULL;
+    struct vwifi_packet *pkt = NULL, *safe = NULL;
     struct wiphy *wiphy = vif->wdev.wiphy;
     struct bss_sta_entry *sta_ent;
     struct hlist_node *tmp;
@@ -1793,20 +1797,20 @@ static int owl_delete_interface(struct owl_vif *vif)
  * be implemented alone. For example, with "connect" there should be a
  * corresponding "disconnect" function.
  */
-static struct cfg80211_ops owl_cfg_ops = {
-    .change_virtual_intf = owl_change_iface,
-    .scan = owl_scan,
-    .connect = owl_connect,
-    .disconnect = owl_disconnect,
-    .get_station = owl_get_station,
-    .dump_station = owl_dump_station,
-    .start_ap = owl_start_ap,
-    .stop_ap = owl_stop_ap,
-    .change_beacon = owl_change_beacon,
-    .add_key = owl_add_key,
-    .del_key = owl_del_key,
-    .set_default_key = owl_set_default_key,
-    .change_station = owl_change_station,
+static struct cfg80211_ops vwifi_cfg_ops = {
+    .change_virtual_intf = vwifi_change_iface,
+    .scan = vwifi_scan,
+    .connect = vwifi_connect,
+    .disconnect = vwifi_disconnect,
+    .get_station = vwifi_get_station,
+    .dump_station = vwifi_dump_station,
+    .start_ap = vwifi_start_ap,
+    .stop_ap = vwifi_stop_ap,
+    .change_beacon = vwifi_change_beacon,
+    .add_key = vwifi_add_key,
+    .del_key = vwifi_del_key,
+    .set_default_key = vwifi_set_default_key,
+    .change_station = vwifi_change_station,
 };
 
 /* Macro for defining 2GHZ channel array */
@@ -1830,7 +1834,7 @@ static struct cfg80211_ops owl_cfg_ops = {
     }
 
 /* Array of "supported" channels in 2GHz band. It is required for wiphy. */
-static const struct ieee80211_channel owl_supported_channels_2ghz[] = {
+static const struct ieee80211_channel vwifi_supported_channels_2ghz[] = {
     CHAN_2GHZ(1, 2412),  CHAN_2GHZ(2, 2417),  CHAN_2GHZ(3, 2422),
     CHAN_2GHZ(4, 2427),  CHAN_2GHZ(5, 2432),  CHAN_2GHZ(6, 2437),
     CHAN_2GHZ(7, 2442),  CHAN_2GHZ(8, 2447),  CHAN_2GHZ(9, 2452),
@@ -1839,7 +1843,7 @@ static const struct ieee80211_channel owl_supported_channels_2ghz[] = {
 };
 
 /* Array of "supported" channels in 5GHz band. It is required for wiphy. */
-static const struct ieee80211_channel owl_supported_channels_5ghz[] = {
+static const struct ieee80211_channel vwifi_supported_channels_5ghz[] = {
     CHAN_5GHZ(34),  CHAN_5GHZ(36),  CHAN_5GHZ(38),  CHAN_5GHZ(40),
     CHAN_5GHZ(42),  CHAN_5GHZ(44),  CHAN_5GHZ(46),  CHAN_5GHZ(48),
     CHAN_5GHZ(52),  CHAN_5GHZ(56),  CHAN_5GHZ(60),  CHAN_5GHZ(64),
@@ -1853,7 +1857,7 @@ static const struct ieee80211_channel owl_supported_channels_5ghz[] = {
 /* Array of supported rates, required to support those next rates
  * for 2GHz and 5GHz band.
  */
-static const struct ieee80211_rate owl_supported_rates[] = {
+static const struct ieee80211_rate vwifi_supported_rates[] = {
     RATE_ENT(10, 0x1),    RATE_ENT(20, 0x2),    RATE_ENT(55, 0x4),
     RATE_ENT(110, 0x8),   RATE_ENT(60, 0x10),   RATE_ENT(90, 0x20),
     RATE_ENT(120, 0x40),  RATE_ENT(180, 0x80),  RATE_ENT(240, 0x100),
@@ -1867,20 +1871,20 @@ static struct ieee80211_supported_band nf_band_2ghz;
 static struct ieee80211_supported_band nf_band_5ghz;
 
 /* Unregister and free virtual interfaces and wiphy. */
-static void owl_free(void)
+static void vwifi_free(void)
 {
-    struct owl_vif *vif = NULL, *safe = NULL;
+    struct vwifi_vif *vif = NULL, *safe = NULL;
 
     spin_lock_bh(&vif_list_lock);
-    list_for_each_entry_safe (vif, safe, &owl->vif_list, list) {
+    list_for_each_entry_safe (vif, safe, &vwifi->vif_list, list) {
         spin_unlock_bh(&vif_list_lock);
-        owl_delete_interface(vif);
+        vwifi_delete_interface(vif);
         spin_lock_bh(&vif_list_lock);
     }
     spin_unlock_bh(&vif_list_lock);
 
-    kfree(owl->blocklist);
-    kfree(owl);
+    kfree(vwifi->blocklist);
+    kfree(vwifi);
 }
 
 /* Allocate and register wiphy.
@@ -1889,7 +1893,7 @@ static void owl_free(void)
  * virtual interface, which means a virtual interface has a physical (virtual)
  * adapter associated with it.
  */
-static struct wiphy *owcfg80211_add(void)
+static struct wiphy *vwifi_cfg80211_add(void)
 {
     struct wiphy *wiphy = NULL;
     enum nl80211_band band;
@@ -1900,7 +1904,7 @@ static struct wiphy *owcfg80211_add(void)
      * interface(s) on top of a wiphy.
      * NULL means use the default phy%d naming.
      */
-    wiphy = wiphy_new_nm(&owl_cfg_ops, 0, NULL);
+    wiphy = wiphy_new_nm(&vwifi_cfg_ops, 0, NULL);
     if (!wiphy) {
         pr_info("couldn't allocate wiphy device\n");
         return NULL;
@@ -1923,25 +1927,26 @@ static struct wiphy *owcfg80211_add(void)
             nf_band_2ghz.ht_cap.cap = IEEE80211_HT_CAP_SGI_20;
             nf_band_2ghz.ht_cap.ht_supported = false;
             nf_band_2ghz.channels =
-                kmemdup(owl_supported_channels_2ghz,
-                        sizeof(owl_supported_channels_2ghz), GFP_KERNEL);
-            nf_band_2ghz.n_channels = ARRAY_SIZE(owl_supported_channels_2ghz);
-            nf_band_2ghz.bitrates = kmemdup(
-                owl_supported_rates, sizeof(owl_supported_rates), GFP_KERNEL);
-            nf_band_2ghz.n_bitrates = ARRAY_SIZE(owl_supported_rates);
+                kmemdup(vwifi_supported_channels_2ghz,
+                        sizeof(vwifi_supported_channels_2ghz), GFP_KERNEL);
+            nf_band_2ghz.n_channels = ARRAY_SIZE(vwifi_supported_channels_2ghz);
+            nf_band_2ghz.bitrates =
+                kmemdup(vwifi_supported_rates, sizeof(vwifi_supported_rates),
+                        GFP_KERNEL);
+            nf_band_2ghz.n_bitrates = ARRAY_SIZE(vwifi_supported_rates);
             wiphy->bands[band] = &nf_band_2ghz;
             break;
         case NL80211_BAND_5GHZ:
             nf_band_5ghz.channels =
-                kmemdup(owl_supported_channels_5ghz,
-                        sizeof(owl_supported_channels_5ghz), GFP_KERNEL);
-            nf_band_5ghz.n_channels = ARRAY_SIZE(owl_supported_channels_5ghz);
+                kmemdup(vwifi_supported_channels_5ghz,
+                        sizeof(vwifi_supported_channels_5ghz), GFP_KERNEL);
+            nf_band_5ghz.n_channels = ARRAY_SIZE(vwifi_supported_channels_5ghz);
             nf_band_5ghz.bitrates =
-                kmemdup(owl_supported_rates + 4,
-                        (ARRAY_SIZE(owl_supported_rates) - 4) *
+                kmemdup(vwifi_supported_rates + 4,
+                        (ARRAY_SIZE(vwifi_supported_rates) - 4) *
                             sizeof(struct ieee80211_rate),
                         GFP_KERNEL);
-            nf_band_5ghz.n_bitrates = ARRAY_SIZE(owl_supported_rates) - 4;
+            nf_band_5ghz.n_bitrates = ARRAY_SIZE(vwifi_supported_rates) - 4;
             wiphy->bands[band] = &nf_band_5ghz;
             break;
         default:
@@ -1964,8 +1969,8 @@ static struct wiphy *owcfg80211_add(void)
 
     wiphy->flags |= WIPHY_FLAG_NETNS_OK;
 
-    wiphy->cipher_suites = owl_cipher_suites;
-    wiphy->n_cipher_suites = ARRAY_SIZE(owl_cipher_suites);
+    wiphy->cipher_suites = vwifi_cipher_suites;
+    wiphy->n_cipher_suites = ARRAY_SIZE(vwifi_cipher_suites);
 
     /* register wiphy, if everything ok - there should be another wireless
      * device in system. use command: $ iw list
@@ -1984,7 +1989,7 @@ error_wiphy_register:
 
 static void vwifi_virtio_scan_complete(struct timer_list *t)
 {
-    struct owl_vif *vif = container_of(t, struct owl_vif, scan_complete);
+    struct vwifi_vif *vif = container_of(t, struct vwifi_vif, scan_complete);
     struct cfg80211_scan_info info = {
         .aborted = false,
     };
@@ -1999,7 +2004,7 @@ static void vwifi_virtio_scan_complete(struct timer_list *t)
     mutex_unlock(&vif->lock);
 }
 
-static void vwifi_virtio_scan_request(struct owl_vif *vif)
+static void vwifi_virtio_scan_request(struct vwifi_vif *vif)
 {
     struct sk_buff *skb;
     struct ethhdr *eth;
@@ -2047,7 +2052,7 @@ static void vwifi_virtio_scan_request(struct owl_vif *vif)
     mod_timer(&vif->scan_timeout, jiffies + msecs_to_jiffies(2000));
 }
 
-static void vwifi_virtio_connect_request(struct owl_vif *vif)
+static void vwifi_virtio_connect_request(struct vwifi_vif *vif)
 {
     struct sk_buff *skb;
     struct ethhdr *eth;
@@ -2081,9 +2086,9 @@ static void vwifi_virtio_connect_request(struct owl_vif *vif)
     vwifi_virtio_tx(vif, skb);
 }
 
-static void vwifi_virtio_disconnect_tx(struct owl_vif *vif);
+static void vwifi_virtio_disconnect_tx(struct vwifi_vif *vif);
 
-static void vwifi_virtio_disconnect(struct owl_vif *vif)
+static void vwifi_virtio_disconnect(struct vwifi_vif *vif)
 {
     vwifi_virtio_disconnect_tx(vif);
 
@@ -2100,7 +2105,7 @@ static void vwifi_virtio_disconnect(struct owl_vif *vif)
     mutex_unlock(&vif->lock);
 }
 
-static void vwifi_virtio_disconnect_tx(struct owl_vif *vif)
+static void vwifi_virtio_disconnect_tx(struct vwifi_vif *vif)
 {
     struct sk_buff *skb;
     struct ethhdr *eth;
@@ -2140,7 +2145,8 @@ static void vwifi_virtio_disconnect_tx(struct owl_vif *vif)
     vwifi_virtio_tx(vif, skb);
 }
 
-static void vwifi_virtio_sta_entry_request(struct owl_vif *vif, const u8 *bssid)
+static void vwifi_virtio_sta_entry_request(struct vwifi_vif *vif,
+                                           const u8 *bssid)
 {
     struct sk_buff *skb;
     struct ethhdr *eth;
@@ -2170,7 +2176,7 @@ static void vwifi_virtio_sta_entry_request(struct owl_vif *vif, const u8 *bssid)
 }
 
 
-static void vwifi_virtio_sta_entry_response(struct owl_vif *vif,
+static void vwifi_virtio_sta_entry_response(struct vwifi_vif *vif,
                                             enum VWIFI_STA_ENTRY_CMD cmd,
                                             const u8 *sta)
 {
@@ -2259,7 +2265,7 @@ out_free_skb:
 }
 
 static void vwifi_virtio_mgmt_rx_sta_entry_response(
-    struct owl_vif *vif,
+    struct vwifi_vif *vif,
     const u8 *src,
     struct vwifi_virtio_sta_entry_resp *sta_ent_resp)
 {
@@ -2318,7 +2324,7 @@ out_unlock:
     mutex_unlock(&vif->bss_sta_table_lock);
 }
 
-static void vwifi_virtio_mgmt_rx_sta_entry_request(struct owl_vif *vif,
+static void vwifi_virtio_mgmt_rx_sta_entry_request(struct vwifi_vif *vif,
                                                    const u8 *src)
 {
     if (vif->wdev.iftype != NL80211_IFTYPE_AP)
@@ -2328,7 +2334,7 @@ static void vwifi_virtio_mgmt_rx_sta_entry_request(struct owl_vif *vif,
 }
 
 static void vwifi_virtio_mgmt_rx_disconnect(
-    struct owl_vif *vif,
+    struct vwifi_vif *vif,
     const u8 *src,
     struct vwifi_virtio_disconn *disconn)
 {
@@ -2368,7 +2374,7 @@ static void vwifi_virtio_mgmt_rx_disconnect(
 }
 
 static void vwifi_virtio_mgmt_rx_connect_response(
-    struct owl_vif *vif,
+    struct vwifi_vif *vif,
     const u8 *src,
     struct vwifi_virtio_conn_resp *conn_resp)
 {
@@ -2396,7 +2402,7 @@ static void vwifi_virtio_mgmt_rx_connect_response(
 }
 
 static void vwifi_virtio_mgmt_rx_connect_request(
-    struct owl_vif *vif,
+    struct vwifi_vif *vif,
     const u8 *src,
     struct vwifi_virtio_conn_req *conn_req)
 {
@@ -2491,7 +2497,7 @@ out_free_sinfo:
 }
 
 static void vwifi_virtio_mgmt_rx_scan_response(
-    struct owl_vif *vif,
+    struct vwifi_vif *vif,
     const u8 *src,
     struct vwifi_virtio_scan_resp *scan_resp)
 {
@@ -2520,7 +2526,7 @@ static void vwifi_virtio_mgmt_rx_scan_response(
 }
 
 static void vwifi_virtio_mgmt_rx_scan_request(
-    struct owl_vif *vif,
+    struct vwifi_vif *vif,
     const u8 src[ETH_ALEN],
     struct vwifi_virtio_scan_req *scan_req)
 {
@@ -2575,7 +2581,7 @@ static void vwifi_virtio_mgmt_rx_scan_request(
 }
 
 
-static void vwifi_virtio_mgmt_rx(struct owl_vif *vif, struct sk_buff *skb)
+static void vwifi_virtio_mgmt_rx(struct vwifi_vif *vif, struct sk_buff *skb)
 {
     struct ethhdr *eth = (struct ethhdr *) skb->data;
     struct vwifi_virtio_header *vh = (struct vwifi_virtio_header *) (eth + 1);
@@ -2627,7 +2633,7 @@ static void vwifi_virtio_mgmt_rx(struct owl_vif *vif, struct sk_buff *skb)
     dev_kfree_skb(skb);
 }
 
-static void vwifi_virtio_data_rx(struct owl_vif *vif, struct sk_buff *skb)
+static void vwifi_virtio_data_rx(struct vwifi_vif *vif, struct sk_buff *skb)
 {
     struct ethhdr *eth = (struct ethhdr *) skb->data;
     struct bss_sta_entry *sta_ent;
@@ -2660,7 +2666,7 @@ static void vwifi_virtio_data_rx(struct owl_vif *vif, struct sk_buff *skb)
 #endif
 }
 
-static void vwifi_virtio_rx_switch(struct owl_vif *vif, struct sk_buff *skb)
+static void vwifi_virtio_rx_switch(struct vwifi_vif *vif, struct sk_buff *skb)
 {
     struct ethhdr *eth = (struct ethhdr *) skb->data;
 
@@ -2672,8 +2678,8 @@ static void vwifi_virtio_rx_switch(struct owl_vif *vif, struct sk_buff *skb)
 
 static void vwifi_virtio_rx_work(struct work_struct *work)
 {
-    struct owl_vif *vif =
-        list_first_entry(&owl->vif_list, struct owl_vif, list);
+    struct vwifi_vif *vif =
+        list_first_entry(&vwifi->vif_list, struct vwifi_vif, list);
     struct sk_buff *skb;
     unsigned int len;
     unsigned long flags;
@@ -2717,7 +2723,7 @@ static void vwifi_virtio_rx_done(struct virtqueue *vq)
     schedule_work(&vwifi_virtio_rx);
 }
 
-static netdev_tx_t vwifi_virtio_tx(struct owl_vif *vif, struct sk_buff *skb)
+static netdev_tx_t vwifi_virtio_tx(struct vwifi_vif *vif, struct sk_buff *skb)
 {
     struct virtio_net_hdr_mrg_rxbuf *hdr =
         (struct virtio_net_hdr_mrg_rxbuf *) skb->cb;
@@ -2833,7 +2839,7 @@ static void vwifi_virtio_remove_vqs(struct virtio_device *vdev)
 /* For now, we only support virtio when station=1 */
 static int vwifi_virtio_probe(struct virtio_device *vdev)
 {
-    struct owl_vif *vif;
+    struct vwifi_vif *vif;
     unsigned long flags;
     int err;
 
@@ -2849,7 +2855,7 @@ static int vwifi_virtio_probe(struct virtio_device *vdev)
         return -EINVAL;
     }
 
-    vif = list_first_entry(&owl->vif_list, struct owl_vif, list);
+    vif = list_first_entry(&vwifi->vif_list, struct vwifi_vif, list);
     if (!vif)
         return -ENOENT;
 
@@ -2921,22 +2927,22 @@ static int __init vwifi_init(void)
 {
     int err;
 
-    owl = kmalloc(sizeof(struct owl_context), GFP_KERNEL);
-    if (!owl) {
-        pr_info("couldn't allocate space for owl_context\n");
+    vwifi = kmalloc(sizeof(struct vwifi_context), GFP_KERNEL);
+    if (!vwifi) {
+        pr_info("couldn't allocate space for vwifi_context\n");
         return -ENOMEM;
     }
 
-    mutex_init(&owl->lock);
-    INIT_LIST_HEAD(&owl->vif_list);
-    INIT_LIST_HEAD(&owl->ap_list);
-    owl->blocklist = kmalloc(sizeof(char) * MAX_BLACKLIST_SIZE, GFP_KERNEL);
+    mutex_init(&vwifi->lock);
+    INIT_LIST_HEAD(&vwifi->vif_list);
+    INIT_LIST_HEAD(&vwifi->ap_list);
+    vwifi->blocklist = kmalloc(sizeof(char) * MAX_BLACKLIST_SIZE, GFP_KERNEL);
 
     for (int i = 0; i < station; i++) {
-        struct wiphy *wiphy = owcfg80211_add();
+        struct wiphy *wiphy = vwifi_cfg80211_add();
         if (!wiphy)
             goto cfg80211_add;
-        if (!owinterface_add(wiphy, i))
+        if (!vwifi_interface_add(wiphy, i))
             goto interface_add;
     }
 
@@ -2950,7 +2956,7 @@ static int __init vwifi_init(void)
     if (err)
         goto err_register_virtio_driver;
 
-    owl->state = OWL_READY;
+    vwifi->state = VWIFI_READY;
 
     return 0;
 
@@ -2958,17 +2964,17 @@ err_register_virtio_driver:
 interface_add:
     /* FIXME: check for resource deallocation */
 cfg80211_add:
-    owl_free();
+    vwifi_free();
 
     return -1;
 }
 
 static void __exit vwifi_exit(void)
 {
-    owl->state = OWL_SHUTDOWN;
+    vwifi->state = VWIFI_SHUTDOWN;
 
     unregister_virtio_driver(&virtio_vwifi);
-    owl_free();
+    vwifi_free();
     netlink_kernel_release(nl_sk);
 }
 

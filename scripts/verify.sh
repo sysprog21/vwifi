@@ -26,12 +26,12 @@ if [ $final_ret -eq 0 ]; then
 
     # get phy number of each interface
     sudo iw dev > device.log
-    owl0_phy=$(cat device.log | grep -B 1 owl0 | grep phy)
-    owl0_phy=${owl0_phy/\#/}
-    owl1_phy=$(cat device.log | grep -B 1 owl1 | grep phy)
-    owl1_phy=${owl1_phy/\#/}
-    owl2_phy=$(cat device.log | grep -B 1 owl2 | grep phy)
-    owl2_phy=${owl2_phy/\#/}
+    vw0_phy=$(cat device.log | grep -B 1 vw0 | grep phy)
+    vw0_phy=${vw0_phy/\#/}
+    vw1_phy=$(cat device.log | grep -B 1 vw1 | grep phy)
+    vw1_phy=${vw1_phy/\#/}
+    vw2_phy=$(cat device.log | grep -B 1 vw2 | grep phy)
+    vw2_phy=${vw2_phy/\#/}
     
     # create network namespaces for each phy (interface) 
     sudo ip netns add ns0
@@ -39,42 +39,42 @@ if [ $final_ret -eq 0 ]; then
     sudo ip netns add ns2
 
     # add each phy (interface) to separate network namesapces
-    sudo iw phy $owl0_phy set netns name ns0
-    sudo iw phy $owl1_phy set netns name ns1
-    sudo iw phy $owl2_phy set netns name ns2
+    sudo iw phy $vw0_phy set netns name ns0
+    sudo iw phy $vw1_phy set netns name ns1
+    sudo iw phy $vw2_phy set netns name ns2
     
-    # running hostapd on owl0, so owl0 becomes AP
-    sudo ip netns exec ns0 ip link set owl0 up
+    # running hostapd on vw0, so vw0 becomes AP
+    sudo ip netns exec ns0 ip link set vw0 up
     sudo ip netns exec ns0 ip link set lo up
     sudo ip netns exec ns0 hostapd -B scripts/hostapd.conf
 
-    sudo ip netns exec ns1 ip link set owl1 up
+    sudo ip netns exec ns1 ip link set vw1 up
     sudo ip netns exec ns1 ip link set lo up
 
-    sudo ip netns exec ns2 ip link set owl2 up
+    sudo ip netns exec ns2 ip link set vw2 up
     sudo ip netns exec ns2 ip link set lo up
 
     # assing IP address to each interface
-    sudo ip netns exec ns0 ip addr add 10.0.0.1/24 dev owl0
-    sudo ip netns exec ns1 ip addr add 10.0.0.2/24 dev owl1
-    sudo ip netns exec ns2 ip addr add 10.0.0.3/24 dev owl2
+    sudo ip netns exec ns0 ip addr add 10.0.0.1/24 dev vw0
+    sudo ip netns exec ns1 ip addr add 10.0.0.2/24 dev vw1
+    sudo ip netns exec ns2 ip addr add 10.0.0.3/24 dev vw2
 
-    # ping test: STA owl1 <--> STA owl2, should fail, because they 
+    # ping test: STA vw1 <--> STA vw2, should fail, because they 
     # haven't connected to AP 
     echo
     echo "================================================================================"
-    echo "Ping Test: STA owl1 (10.0.0.2) (not connected) <--> STA owl2 (10.0.0.3) (not connected)"
+    echo "Ping Test: STA vw1 (10.0.0.2) (not connected) <--> STA vw2 (10.0.0.3) (not connected)"
     echo
-    echo "(should fail, because they haven't connnected to AP owl0 (10.0.0.1))"
+    echo "(should fail, because they haven't connnected to AP vw0 (10.0.0.1))"
     echo "(be patient, it will take some time to route...)"
     echo "================================================================================"
     sudo ip netns exec ns1 ping -c 1 10.0.0.3
 
-    # STA owl1 performs scan and connect to TestAP
-    sudo ip netns exec ns1 iw dev owl1 scan > scan_result.log
+    # STA vw1 performs scan and connect to TestAP
+    sudo ip netns exec ns1 iw dev vw1 scan > scan_result.log
     cat scan_result.log | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| tail -n 1 > scan_bssid.log
-    sudo ip netns exec ns1 iw dev owl1 connect test
-    sudo ip netns exec ns1 iw dev owl1 link | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > connected.log
+    sudo ip netns exec ns1 iw dev vw1 connect test
+    sudo ip netns exec ns1 iw dev vw1 link | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > connected.log
 
     DIFF=$(diff connected.log scan_bssid.log)
     if [ "$DIFF" != "" ]; then
@@ -83,14 +83,14 @@ if [ $final_ret -eq 0 ]; then
 
     echo 
     echo "=================================="
-    echo "owl1 connected to AP TestAP (owl0)"
+    echo "vw1 connected to AP TestAP (vw0)"
     echo "=================================="
 
-    # STA owl2 performs scan and connect to TestAP
-    sudo ip netns exec ns2 iw dev owl2 scan > scan_result.log
+    # STA vw2 performs scan and connect to TestAP
+    sudo ip netns exec ns2 iw dev vw2 scan > scan_result.log
     cat scan_result.log | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| tail -n 1 > scan_bssid.log
-    sudo ip netns exec ns2 iw dev owl2 connect test
-    sudo ip netns exec ns2 iw dev owl2 link | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > connected.log
+    sudo ip netns exec ns2 iw dev vw2 connect test
+    sudo ip netns exec ns2 iw dev vw2 link | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > connected.log
 
     DIFF=$(diff connected.log scan_bssid.log)
     if [ "$DIFF" != "" ]; then
@@ -99,16 +99,16 @@ if [ $final_ret -eq 0 ]; then
 
     echo 
     echo "=================================="
-    echo "owl2 connected to AP TestAP (owl0)"
+    echo "vw2 connected to AP TestAP (vw0)"
     echo "=================================="
 
-    # ping test: STA owl1 (10.0.0.2) <--> STA owl2 (10.0.0.3),
-    # should success, packet will be relayed by AP owl0 (10.0.0.1)
+    # ping test: STA vw1 (10.0.0.2) <--> STA vw2 (10.0.0.3),
+    # should success, packet will be relayed by AP vw0 (10.0.0.1)
     echo
     echo "================================================================================"
-    echo "Ping Test: STA owl1 (10.0.0.2) (connected) <--> STA owl2 (10.0.0.3) (connected)"
+    echo "Ping Test: STA vw1 (10.0.0.2) (connected) <--> STA vw2 (10.0.0.3) (connected)"
     echo
-    echo "(should success, packet will be relay by AP owl0 (10.0.0.1))"
+    echo "(should success, packet will be relay by AP vw0 (10.0.0.1))"
     echo "================================================================================"
     sudo ip netns exec ns1 ping -c 4 10.0.0.3
 
@@ -118,13 +118,13 @@ if [ $final_ret -eq 0 ]; then
         final_ret=6
     fi
 
-    # ping test: STA owl2 (10.0.0.3) <--> AP owl0 (10.0.0.1),
+    # ping test: STA vw2 (10.0.0.3) <--> AP vw0 (10.0.0.1),
     # should success, packet will directly send/receive between STA and AP
     echo
     echo "================================================================================"
-    echo "Ping Test: STA owl1 (10.0.0.3) (connected) <--> AP owl0 (10.0.0.1)"
+    echo "Ping Test: STA vw1 (10.0.0.3) (connected) <--> AP vw0 (10.0.0.1)"
     echo
-    echo "(should success, packet will directly send/receive between STA owl1 and AP owl0)"
+    echo "(should success, packet will directly send/receive between STA vw1 and AP vw0)"
     echo "================================================================================"
     sudo ip netns exec ns2 ping -c 4 10.0.0.1
     
@@ -135,7 +135,7 @@ if [ $final_ret -eq 0 ]; then
     fi
 
     # verify TSF (in usec)
-    sudo ip netns exec ns1 iw dev owl1 scan > scan_result.log
+    sudo ip netns exec ns1 iw dev vw1 scan > scan_result.log
     tsf=$(cat scan_result.log | grep "TSF" | tail -n 1 | awk '{print $2}')
     uptime=$(cat /proc/uptime | awk '{print $1}')
     uptime=$(echo "$uptime*1000000" | bc | awk -F "." '{print $1}')
@@ -146,15 +146,15 @@ if [ $final_ret -eq 0 ]; then
         final_ret=8
     fi
 
-    # plot the distribution of RSSI of owl0
-    echo -e "\n\n######## collecting RSSI information of owl0, please wait... ##########"
-    owl0_mac=$(sudo ip netns exec ns0 iw dev | grep -E 'owl0$' -A 3 | grep addr | awk '{print $2}')
+    # plot the distribution of RSSI of vw0
+    echo -e "\n\n######## collecting RSSI information of vw0, please wait... ##########"
+    vw0_mac=$(sudo ip netns exec ns0 iw dev | grep -E 'vw0$' -A 3 | grep addr | awk '{print $2}')
     counts=1000 # do get_station 1000 times
 
     for i in $(seq 1 1 $counts); do
-        owl0_signal=$(sudo ip netns exec ns0 \
-            iw dev owl0 station get $owl0_mac | grep "signal" | awk '{print $2}')
-        echo $owl0_signal >> rssi.txt
+        vw0_signal=$(sudo ip netns exec ns0 \
+            iw dev vw0 station get $vw0_mac | grep "signal" | awk '{print $2}')
+        echo $vw0_signal >> rssi.txt
     done
 
     python3 $ROOT/scripts/plot_rssi.py
@@ -164,7 +164,7 @@ if [ $final_ret -eq 0 ]; then
     fi
 
     # TestAP performs station dump
-    sudo ip netns exec ns0 iw dev owl0 station dump > station_dump_result.log
+    sudo ip netns exec ns0 iw dev vw0 station dump > station_dump_result.log
     for num in {1..2}; do  
         cat station_dump_result.log | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}'| sed -n "${num}p" > dump_ssid.log
         sudo ip netns exec "ns${num}" iw dev | grep -o -E '([[:xdigit:]]{1,2}:){5}[[:xdigit:]]{1,2}' > station_ssid.log
