@@ -65,3 +65,10 @@ function stop_hostapd() {
 	sudo kill -9 $(pidof hostapd) > /dev/null
 	return 0
 }
+
+function get_wiphy_name() {
+    local interface_name=$1
+    local wiphy_name=$(sudo iw dev $interface_name info | grep wiphy | awk '{print $2}')
+    wiphy_name=$(sudo iw list | grep "wiphy index: $wiphy_name" -B 1 | grep Wiphy | awk '{print $2}')
+    echo $wiphy_name
+}

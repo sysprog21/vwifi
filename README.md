@@ -125,11 +125,11 @@ $ sudo iw list
 
 Reference output:
 ```
-Wiphy phy2
+Wiphy vw_phy2
 (... omit)
-Wiphy phy1
+Wiphy vw_phy1
 (... omit)
-Wiphy phy0
+Wiphy vw_phy0
 	wiphy index: 0
 	max # scan SSIDs: 69
 	max scan IEs length: 0 bytes
@@ -205,12 +205,34 @@ $ sudo ip netns add ns1
 $ sudo ip netns add ns2
 ````
 
+Find the `wiphy` name for the three interfaces.
+The index number for the `wiphy` name postfix might be different each time.
+Please use the following command for the ease of memorizing different index number everytime.
+```shell
+$ vw0_phy=$(sudo iw dev vw0 info | grep wiphy | awk '{print $2}')
+$ vw0_phy=$(sudo iw list | grep "wiphy index: $vw0_phy" -B 1 | grep Wiphy | awk '{print $2}')
+$ vw1_phy=$(sudo iw dev vw1 info | grep wiphy | awk '{print $2}')
+$ vw1_phy=$(sudo iw list | grep "wiphy index: $vw1_phy" -B 1 | grep Wiphy | awk '{print $2}')
+$ vw2_phy=$(sudo iw dev vw2 info | grep wiphy | awk '{print $2}')
+$ vw2_phy=$(sudo iw list | grep "wiphy index: $vw2_phy" -B 1 | grep Wiphy | awk '{print $2}')
+```
+
+Check whether the name of each `wiphy` is the same as the name listing under the command `sudo iw list`
+```shell
+$ echo $vw0_phy
+vw_phy0
+$ echo $vw1_phy
+vw_phy1
+$ echo $vw2_phy
+vw_phy2
+```
+
 Assign the three interfaces to separate network namespaces.
 Please note that the `wiphy` is placed within the network namespace, and the interface associated with that wiphy will be contained within it.
 ```shell
-$ sudo iw phy phy0 set netns name ns0
-$ sudo iw phy phy1 set netns name ns1
-$ sudo iw phy phy2 set netns name ns2
+$ sudo iw phy $vw_phy0 set netns name ns0
+$ sudo iw phy $vw_phy1 set netns name ns1
+$ sudo iw phy $vw_phy2 set netns name ns2
 ```
 
 ### Assigning IP Addresses to Each Interface
