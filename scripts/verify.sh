@@ -26,12 +26,9 @@ if [ $final_ret -eq 0 ]; then
 
     # get phy number of each interface
     sudo iw dev > device.log
-    vw0_phy=$(cat device.log | grep -B 1 vw0 | grep phy)
-    vw0_phy=${vw0_phy/\#/}
-    vw1_phy=$(cat device.log | grep -B 1 vw1 | grep phy)
-    vw1_phy=${vw1_phy/\#/}
-    vw2_phy=$(cat device.log | grep -B 1 vw2 | grep phy)
-    vw2_phy=${vw2_phy/\#/}
+    vw0_phy=$(get_wiphy_name vw0)
+    vw1_phy=$(get_wiphy_name vw1)
+    vw2_phy=$(get_wiphy_name vw2)
     
     # create network namespaces for each phy (interface) 
     sudo ip netns add ns0

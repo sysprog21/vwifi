@@ -24,6 +24,9 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 #define NAME_PREFIX "vw"
 #define NDEV_NAME NAME_PREFIX "%d"
 
+#define VWIFI_WIPHY_NAME_LEN 12
+#define VWIFI_WIPHY_PREFIX "vw_phy"
+
 #define DOT11_MGMT_HDR_LEN 24      /* d11 management header len */
 #define DOT11_BCN_PRB_FIXED_LEN 12 /* beacon/probe fixed length */
 
@@ -70,6 +73,11 @@ static DEFINE_SPINLOCK(vif_list_lock);
 
 /* SME stands for "station management entity" */
 enum sme_state { SME_DISCONNECTED, SME_CONNECTING, SME_CONNECTED };
+
+/* Each virtual interface contains a wiphy, vwifi_wiphy_counter is responsible
+ * for recording the number of wiphy in vwifi.
+ */
+static atomic_t vwifi_wiphy_counter = ATOMIC_INIT(0);
 
 /* Virtual interface pointed to by netdev_priv(). Fields in the structure are
  * interface-dependent. Every interface has its own vwifi_vif, regardless of the
@@ -1898,13 +1906,45 @@ static struct wiphy *vwifi_cfg80211_add(void)
     struct wiphy *wiphy = NULL;
     enum nl80211_band band;
 
+    /* In order to customize vwifi's wiphy name, we use vwifi_wiphy_counter to
+     * keep track of the number of wiphy in vwifi, and use vwifi_wiphy_idx to
+     * retreive the value of vwifi_wiphy_counter.
+     */
+    int vwifi_wiphy_idx = atomic_inc_return(&vwifi_wiphy_counter);
+
+    /* atomic_inc_return makes it start at 1, make it start at 0 */
+    vwifi_wiphy_idx--;
+    if (unlikely(vwifi_wiphy_idx < 0)) {
+        atomic_dec(&vwifi_wiphy_counter);
+        return NULL;
+    }
+
     /* allocate wiphy context. It is possible just to use wiphy_new().
      * wiphy should represent physical FullMAC wireless device. We need
      * to implement add_virtual_intf() from cfg80211_ops for adding
      * interface(s) on top of a wiphy.
      * NULL means use the default phy%d naming.
+     * vwifi_wiphy_name is the custom-made vw_phy%d naming we use for
+     * wiphy in vwifi.
      */
-    wiphy = wiphy_new_nm(&vwifi_cfg_ops, 0, NULL);
+
+    /* Reference:
+     * https://elixir.bootlin.com/linux/v6.7/source/net/wireless/core.c#L447
+     * The default phy%d naming for wiphy in linux kernel depends on the value
+     * of a static variable wiphy_counter. The value of wiphy_counter will never
+     * decrease even if we unregister the wiphy. This behavior ensures that the
+     * naming and indexing for `struct wiphy` will be absolutely unique.
+     * However, the kernel might have other modules or projects also utilizing
+     * `struct wiphy`, which will cause some confusion of wiphy's index and
+     * naming when using the default naming scheme. We implement a custom-made
+     * name "vw_phy%d" for wiphy in vwifi device driver, in order to seperate
+     * the naming and indexing for `struct wiphy` in vwifi.
+     */
+    char vwifi_wiphy_name[VWIFI_WIPHY_NAME_LEN] = {0};
+    snprintf(vwifi_wiphy_name, VWIFI_WIPHY_NAME_LEN, "%s%d", VWIFI_WIPHY_PREFIX,
+             vwifi_wiphy_idx);
+
+    wiphy = wiphy_new_nm(&vwifi_cfg_ops, 0, vwifi_wiphy_name);
     if (!wiphy) {
         pr_info("couldn't allocate wiphy device\n");
         return NULL;
