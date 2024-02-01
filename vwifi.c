@@ -1288,7 +1288,7 @@ static void vwifi_virtio_scan_complete(struct timer_list *t);
  * interfaces. The interface mode is set to STA mode. To change the interface
  * type, use the change_virtual_intf() function.
  */
-static struct wireless_dev *vwifi_interface_add(struct wiphy *wiphy, int if_idx)
+static struct wireless_dev *vwifi_interface_add(struct wiphy *wiphy)
 {
     struct net_device *ndev = NULL;
     struct vwifi_vif *vif = NULL;
@@ -1323,7 +1323,8 @@ static struct wireless_dev *vwifi_interface_add(struct wiphy *wiphy, int if_idx)
      * address (the first byte of multicast addrs is odd).
      */
     char intf_name[ETH_ALEN] = {0};
-    snprintf(intf_name + 1, ETH_ALEN - 1, "%s%d", NAME_PREFIX, if_idx);
+    snprintf(intf_name + 1, ETH_ALEN - 1, "%s%d", NAME_PREFIX,
+             atomic_read(&vwifi_wiphy_counter));
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
     eth_hw_addr_set(vif->ndev, intf_name);
@@ -2982,7 +2983,7 @@ static int __init vwifi_init(void)
         struct wiphy *wiphy = vwifi_cfg80211_add();
         if (!wiphy)
             goto cfg80211_add;
-        if (!vwifi_interface_add(wiphy, i))
+        if (!vwifi_interface_add(wiphy))
             goto interface_add;
     }
 
