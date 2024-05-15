@@ -165,7 +165,7 @@ MODULE_PARM_DESC(station, "Number of virtual interfaces running in STA mode.");
 static struct vwifi_context *vwifi = NULL;
 
 /* Blocklist content */
-#define MAX_BLACKLIST_SIZE 1024
+#define MAX_BLOCKLIST_SIZE 1024
 
 static struct sock *nl_sk = NULL;
 
@@ -202,7 +202,7 @@ static void blocklist_load(char *blist)
         return;
     }
     memset(vwifi->blocklist, '\0',
-           MAX_BLACKLIST_SIZE); /* clear the blocklist */
+           MAX_BLOCKLIST_SIZE); /* clear the blocklist */
     strncpy(vwifi->blocklist, blist, strlen(blist));
 }
 
@@ -2976,7 +2976,7 @@ static int __init vwifi_init(void)
     mutex_init(&vwifi->lock);
     INIT_LIST_HEAD(&vwifi->vif_list);
     INIT_LIST_HEAD(&vwifi->ap_list);
-    vwifi->blocklist = kmalloc(sizeof(char) * MAX_BLACKLIST_SIZE, GFP_KERNEL);
+    vwifi->blocklist = kmalloc(sizeof(char) * MAX_BLOCKLIST_SIZE, GFP_KERNEL);
 
     for (int i = 0; i < station; i++) {
         struct wiphy *wiphy = vwifi_cfg80211_add();
