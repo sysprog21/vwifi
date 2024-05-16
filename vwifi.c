@@ -66,7 +66,7 @@ struct vwifi_context {
     enum vwifi_state state;    /**< indicate the program state */
     struct list_head vif_list; /**< maintaining all interfaces */
     struct list_head ap_list;  /**< maintaining multiple AP */
-    char *denylist;           /**< maintaining the denylist */
+    char *denylist;            /**< maintaining the denylist */
 };
 
 static DEFINE_SPINLOCK(vif_list_lock);
@@ -183,8 +183,7 @@ static int denylist_check(char *dest, char *source)
         char *denylist_dest = strsep(&token, " ");
         strsep(&token, " ");
         char *denylist_source = token;
-        if (!strcmp(dest, denylist_dest) &&
-            !strcmp(source, denylist_source)) {
+        if (!strcmp(dest, denylist_dest) && !strcmp(source, denylist_source)) {
             kfree(user_input);
             return 1;
         }
@@ -201,8 +200,7 @@ static void denylist_load(char *dlist)
         pr_info("vwifi->denylist have to be kmalloc first\n");
         return;
     }
-    memset(vwifi->denylist, '\0',
-           MAX_DENYLIST_SIZE); /* clear the denylist */
+    memset(vwifi->denylist, '\0', MAX_DENYLIST_SIZE); /* clear the denylist */
     strncpy(vwifi->denylist, dlist, strlen(dlist));
 }
 
@@ -834,7 +832,7 @@ static netdev_tx_t vwifi_ndo_start_xmit(struct sk_buff *skb,
                 if (ether_addr_equal(eth_hdr->h_dest,
                                      dest_vif->ndev->dev_addr)) {
                     if (!denylist_check(dest_vif->ndev->name,
-                                         src_vif->ndev->name) &&
+                                        src_vif->ndev->name) &&
                         __vwifi_ndo_start_xmit(vif, dest_vif, skb))
                         count++;
                     break;

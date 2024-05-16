@@ -49,10 +49,7 @@ bool denylist_pair_check(int src_len, int dest_len)
 }
 
 /* Copy destination and source interface pair into denylist buffer */
-bool denylist_make(char *denylist,
-                    char *dest[],
-                    char *src[],
-                    int denylist_len)
+bool denylist_make(char *denylist, char *dest[], char *src[], int denylist_len)
 {
     for (int i = 0; i < denylist_len; i++) {
         char tmp[LINE_LENGTH] = {'\0'};
@@ -60,8 +57,7 @@ bool denylist_make(char *denylist,
         if (strlen(tmp) + strlen(denylist) < NLMSG_SPACE(MAX_PAYLOAD))
             strcat(denylist, tmp);
         else {
-            printf(
-                "Error: Denylist size exceeds the maximum size of buffer\n");
+            printf("Error: Denylist size exceeds the maximum size of buffer\n");
             return false;
         }
     }
