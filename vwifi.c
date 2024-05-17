@@ -66,7 +66,7 @@ struct vwifi_context {
     enum vwifi_state state;    /**< indicate the program state */
     struct list_head vif_list; /**< maintaining all interfaces */
     struct list_head ap_list;  /**< maintaining multiple AP */
-    char *blocklist;           /**< maintaining the blocklist */
+    char *denylist;            /**< maintaining the denylist */
 };
 
 static DEFINE_SPINLOCK(vif_list_lock);
@@ -164,27 +164,26 @@ MODULE_PARM_DESC(station, "Number of virtual interfaces running in STA mode.");
 /* Global context */
 static struct vwifi_context *vwifi = NULL;
 
-/* Blocklist content */
-#define MAX_BLACKLIST_SIZE 1024
+/* Denylist content */
+#define MAX_DENYLIST_SIZE 1024
 
 static struct sock *nl_sk = NULL;
 
-static int blocklist_check(char *dest, char *source)
+static int denylist_check(char *dest, char *source)
 {
-    if (!vwifi->blocklist || !*(vwifi->blocklist))
+    if (!vwifi->denylist || !*(vwifi->denylist))
         return 0;
 
     char *user_input =
-        kmalloc(sizeof(char) * (strlen(vwifi->blocklist) + 1), GFP_KERNEL);
-    strncpy(user_input, vwifi->blocklist, strlen(vwifi->blocklist));
+        kmalloc(sizeof(char) * (strlen(vwifi->denylist) + 1), GFP_KERNEL);
+    strncpy(user_input, vwifi->denylist, strlen(vwifi->denylist));
 
     char *token = strsep(&user_input, "\n");
     while (token) {
-        char *blacklist_dest = strsep(&token, " ");
+        char *denylist_dest = strsep(&token, " ");
         strsep(&token, " ");
-        char *blacklist_source = token;
-        if (!strcmp(dest, blacklist_dest) &&
-            !strcmp(source, blacklist_source)) {
+        char *denylist_source = token;
+        if (!strcmp(dest, denylist_dest) && !strcmp(source, denylist_source)) {
             kfree(user_input);
             return 1;
         }
@@ -195,28 +194,27 @@ static int blocklist_check(char *dest, char *source)
     return 0;
 }
 
-static void blocklist_load(char *blist)
+static void denylist_load(char *dlist)
 {
-    if (!vwifi->blocklist) {
-        pr_info("vwifi->blocklist have to be kmalloc first\n");
+    if (!vwifi->denylist) {
+        pr_info("vwifi->denylist have to be kmalloc first\n");
         return;
     }
-    memset(vwifi->blocklist, '\0',
-           MAX_BLACKLIST_SIZE); /* clear the blocklist */
-    strncpy(vwifi->blocklist, blist, strlen(blist));
+    memset(vwifi->denylist, '\0', MAX_DENYLIST_SIZE); /* clear the denylist */
+    strncpy(vwifi->denylist, dlist, strlen(dlist));
 }
 
-static void blocklist_nl_recv(struct sk_buff *skb)
+static void denylist_nl_recv(struct sk_buff *skb)
 {
     struct nlmsghdr *nlh; /* netlink message header */
     int pid;
     struct sk_buff *skb_out;
-    char *msg = "vwifi has received your blocklist";
+    char *msg = "vwifi has received your denylist";
     int msg_size = strlen(msg);
 
     nlh = (struct nlmsghdr *) skb->data;
 
-    blocklist_load((char *) nlmsg_data(nlh));
+    denylist_load((char *) nlmsg_data(nlh));
 
     /* pid of sending process */
     pid = nlh->nlmsg_pid;
@@ -236,7 +234,7 @@ static void blocklist_nl_recv(struct sk_buff *skb)
 }
 
 static struct netlink_kernel_cfg nl_config = {
-    .input = blocklist_nl_recv,
+    .input = denylist_nl_recv,
 };
 
 /**
@@ -820,8 +818,8 @@ static netdev_tx_t vwifi_ndo_start_xmit(struct sk_buff *skb,
                                      dest_vif->ndev->dev_addr))
                     continue;
 
-                /* Don't send packet from dest_vif's blocklist */
-                if (blocklist_check(dest_vif->ndev->name, src_vif->ndev->name))
+                /* Don't send packet from dest_vif's denylist */
+                if (denylist_check(dest_vif->ndev->name, src_vif->ndev->name))
                     continue;
 
                 if (__vwifi_ndo_start_xmit(vif, dest_vif, skb))
@@ -833,8 +831,8 @@ static netdev_tx_t vwifi_ndo_start_xmit(struct sk_buff *skb,
             list_for_each_entry (dest_vif, &vif->bss_list, bss_list) {
                 if (ether_addr_equal(eth_hdr->h_dest,
                                      dest_vif->ndev->dev_addr)) {
-                    if (!blocklist_check(dest_vif->ndev->name,
-                                         src_vif->ndev->name) &&
+                    if (!denylist_check(dest_vif->ndev->name,
+                                        src_vif->ndev->name) &&
                         __vwifi_ndo_start_xmit(vif, dest_vif, skb))
                         count++;
                     break;
@@ -1891,7 +1889,7 @@ static void vwifi_free(void)
     }
     spin_unlock_bh(&vif_list_lock);
 
-    kfree(vwifi->blocklist);
+    kfree(vwifi->denylist);
     kfree(vwifi);
 }
 
@@ -2976,7 +2974,7 @@ static int __init vwifi_init(void)
     mutex_init(&vwifi->lock);
     INIT_LIST_HEAD(&vwifi->vif_list);
     INIT_LIST_HEAD(&vwifi->ap_list);
-    vwifi->blocklist = kmalloc(sizeof(char) * MAX_BLACKLIST_SIZE, GFP_KERNEL);
+    vwifi->denylist = kmalloc(sizeof(char) * MAX_DENYLIST_SIZE, GFP_KERNEL);
 
     for (int i = 0; i < station; i++) {
         struct wiphy *wiphy = vwifi_cfg80211_add();

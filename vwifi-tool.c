@@ -9,7 +9,7 @@
 
 #define MAX_PAYLOAD 1024
 #define LINE_LENGTH 20
-#define MAX_BLOCKLIST_PAIR 5
+#define MAX_DENYLIST_PAIR 5
 #define VWIFI_STATUS_FILE "/sys/module/vwifi/initstate"
 
 
@@ -43,33 +43,29 @@ bool opt_set(int d, int s, int c)
 
 /* Check whether the number of source interfaces matches with the number of
  * destination interfaces */
-bool blocklist_pair_check(int src_len, int dest_len)
+bool denylist_pair_check(int src_len, int dest_len)
 {
     return src_len == dest_len;
 }
 
-/* Copy destination and source interface pair into blocklist buffer */
-bool blocklist_make(char *blocklist,
-                    char *dest[],
-                    char *src[],
-                    int blocklist_len)
+/* Copy destination and source interface pair into denylist buffer */
+bool denylist_make(char *denylist, char *dest[], char *src[], int denylist_len)
 {
-    for (int i = 0; i < blocklist_len; i++) {
+    for (int i = 0; i < denylist_len; i++) {
         char tmp[LINE_LENGTH] = {'\0'};
-        snprintf(tmp, LINE_LENGTH, "%s %s %s\n", dest[i], "blocks", src[i]);
-        if (strlen(tmp) + strlen(blocklist) < NLMSG_SPACE(MAX_PAYLOAD))
-            strcat(blocklist, tmp);
+        snprintf(tmp, LINE_LENGTH, "%s %s %s\n", dest[i], "denys", src[i]);
+        if (strlen(tmp) + strlen(denylist) < NLMSG_SPACE(MAX_PAYLOAD))
+            strcat(denylist, tmp);
         else {
-            printf(
-                "Error: Blocklist size exceeds the maximum size of buffer\n");
+            printf("Error: Denylist size exceeds the maximum size of buffer\n");
             return false;
         }
     }
     return true;
 }
 
-/* Send blocklist to kernel using netlink socket */
-bool blocklist_send(char *blocklist)
+/* Send denylist to kernel using netlink socket */
+bool denylist_send(char *denylist)
 {
     int sock_fd = socket(PF_NETLINK, SOCK_RAW, NETLINK_USERSOCK);
     if (sock_fd < 0) {
@@ -96,7 +92,7 @@ bool blocklist_send(char *blocklist)
     nlh->nlmsg_pid = getpid();
     nlh->nlmsg_flags = 0;
 
-    strncpy(NLMSG_DATA(nlh), blocklist, NLMSG_SPACE(MAX_PAYLOAD));
+    strncpy(NLMSG_DATA(nlh), denylist, NLMSG_SPACE(MAX_PAYLOAD));
 
     struct iovec iov = {
         .iov_base = (void *) nlh,
@@ -110,7 +106,7 @@ bool blocklist_send(char *blocklist)
         .msg_iovlen = 1,
     };
 
-    printf("Configuring blocklist for vwifi...\n");
+    printf("Configuring denylist for vwifi...\n");
     sendmsg(sock_fd, &msg, 0);
 
     recvmsg(sock_fd, &msg, 0);
@@ -123,10 +119,10 @@ bool blocklist_send(char *blocklist)
 
 int main(int argc, char *argv[])
 {
-    /* Get opt arguments from command line to configure blocklist */
-    char *dest[MAX_BLOCKLIST_PAIR], *src[MAX_BLOCKLIST_PAIR],
-        blocklist_pair[MAX_BLOCKLIST_PAIR][LINE_LENGTH];
-    int blocklist_len = 0, dest_len = 0, src_len = 0, clear = 0;
+    /* Get opt arguments from command line to configure denylist */
+    char *dest[MAX_DENYLIST_PAIR], *src[MAX_DENYLIST_PAIR],
+        denylist_pair[MAX_DENYLIST_PAIR][LINE_LENGTH];
+    int denylist_len = 0, dest_len = 0, src_len = 0, clear = 0;
     int c;
 
     while ((c = getopt(argc, argv, "d:s:ch")) != -1) {
@@ -149,7 +145,7 @@ int main(int argc, char *argv[])
             printf("The arguments are:\n\n");
             printf("\t-d  Destination interface name\n");
             printf("\t-s Source interface name\n");
-            printf("\t-c Clear blocklist\n");
+            printf("\t-c Clear denylist\n");
             return 0;
         default:
             printf("Invalid arguments\n");
@@ -164,27 +160,27 @@ int main(int argc, char *argv[])
     if (!opt_set(dest_len, src_len, clear))
         return 0;
 
-    if (!clear && !blocklist_pair_check(src_len, dest_len)) {
+    if (!clear && !denylist_pair_check(src_len, dest_len)) {
         printf("Destination number doesn't match with Source number\n");
         exit(1);
     }
 
-    blocklist_len =
+    denylist_len =
         clear ? 0
-              : (dest_len < MAX_BLOCKLIST_PAIR ? dest_len : MAX_BLOCKLIST_PAIR);
+              : (dest_len < MAX_DENYLIST_PAIR ? dest_len : MAX_DENYLIST_PAIR);
 
-    /* Copy blocklist pair into message buffer */
+    /* Copy denylist pair into message buffer */
     char buffer[NLMSG_SPACE(MAX_PAYLOAD)];
     memset(buffer, '\0', sizeof(buffer));
 
-    if (!blocklist_make(buffer, dest, src, blocklist_len))
+    if (!denylist_make(buffer, dest, src, denylist_len))
         exit(1);
 
     if (!clear)
-        printf("blocklist:\n%s", buffer);
+        printf("denylist:\n%s", buffer);
 
-    /* Send blocklist buffer to kernel */
-    if (!blocklist_send(buffer))
+    /* Send denylist buffer to kernel */
+    if (!denylist_send(buffer))
         exit(1);
 
     return 0;

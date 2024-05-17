@@ -371,7 +371,7 @@ A userspace tool which supports more user-specific utilization for vwifi.
 Aiming to provide more flexibility and customization for users of vwifi.
 Currently supporting feature:
 * display the status of vwifi driver
-* Use netlink socket to communicate with vwifi driver allowing user to configure user-specific block list
+* Use netlink socket to communicate with vwifi driver allowing user to configure user-specific deny list
 
 #### Status checking
 We can use `vwifi-tool` to check the status of vwifi driver by executing the following command:
@@ -387,24 +387,24 @@ Otherwise, vwifi isn't loaded into kernel yet, the output will be:
 vwifi status : not loaded
 ```
 
-#### Blocklist test
-vwifi also supports blocklist ability to allow some interfaces to block packets from certain interfaces.
-We can use `vwifi-tool` to set or unset blocklist for vwifi, multiple options are explained as below
-* `-d` : specify the destination interface for a blocklist pair
-* `-s` : specify the source interface for a blocklist pair
-* `-c` : `1` means to unset the blocklist in vwifi, default as `0`
+#### Denylist test
+vwifi also supports denylist ability to allow some interfaces to deny packets from certain interfaces.
+We can use `vwifi-tool` to set or unset denylist for vwifi, multiple options are explained as below
+* `-d` : specify the destination interface for a denylist pair
+* `-s` : specify the source interface for a denylist pair
+* `-c` : `1` means to unset the denylist in vwifi, default as `0`
 
-Set the blocklist pair using vwifi-tool like the following
+Set the denylist pair using vwifi-tool like the following
 ```
 $ ./vwifi-tool -d vw2 -s vw1
 ```
-You should see the following output, including your blocklist which will be sent to vwifi
+You should see the following output, including your denylist which will be sent to vwifi
 ```
 vwifi status : live
-blocklist:
-vw2 blocks vw1
-Configuring blocklist for vwifi...
-Message from vwifi: vwifi has received your blocklist
+denylist:
+vw2 denys vw1
+Configuring denylist for vwifi...
+Message from vwifi: vwifi has received your denylist
 ```
 Then you can try to do the ping test again
 ```
@@ -417,18 +417,18 @@ PING 10.0.0.3 (10.0.0.3) 56(84) bytes of data.
 --- 10.0.0.3 ping statistics ---
 4 packets transmitted, 0 received, 100% packet loss, time 3053ms
 ```
-You can adjust the content of your blacklist and load it into vwifi anytime.
+You can adjust the content of your denylist and load it into vwifi anytime.
 
-If you want to unset the blocklist in vwifi, simply add the option `-c` with vwifi-tool
+If you want to unset the denylist in vwifi, simply add the option `-c` with vwifi-tool
 ```
 $ ./vwifi-tool -c
 ```
 You'll see the following output
 ```
 vwifi status : live
-Unset blocklist for vwifi...
-Configuring blocklist for vwifi...
-Message from vwifi: vwifi has received your blocklist
+Unset denylist for vwifi...
+Configuring denylist for vwifi...
+Message from vwifi: vwifi has received your denylist
 ```
 ## Testing environment (virtio)
 Below is our testing environment with virtio feature:
