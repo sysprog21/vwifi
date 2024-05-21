@@ -1579,10 +1579,15 @@ static int vwifi_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
 
     return 0;
 }
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
+
 static int vwifi_change_beacon(struct wiphy *wiphy,
                                struct net_device *ndev,
-                               struct cfg80211_beacon_data *info)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
+                               struct cfg80211_beacon_data *info
+#else
+                               struct cfg80211_ap_update *info
+#endif
+)
 {
     struct vwifi_vif *vif = ndev_get_vwifi_vif(ndev);
     int ie_offset = DOT11_MGMT_HDR_LEN + DOT11_BCN_PRB_FIXED_LEN;
@@ -1593,49 +1598,23 @@ static int vwifi_change_beacon(struct wiphy *wiphy,
      * 2. tail: beacon IEs after TIM IE
      * We combine them and store them in vif->beacon_ie.
      */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
     head_ie_len = info->head_len - ie_offset;
     tail_ie_len = info->tail_len;
-
-    if (likely(head_ie_len + tail_ie_len <= IE_MAX_LEN)) {
-        vif->beacon_ie_len = head_ie_len + tail_ie_len;
-        memset(vif->beacon_ie, 0, IE_MAX_LEN);
-        memcpy(vif->beacon_ie, &info->head[ie_offset], head_ie_len);
-        memcpy(vif->beacon_ie + head_ie_len, info->tail, tail_ie_len);
-
-        pr_info(
-            "%s: head_ie_len (before TIM IE) = %d, tail_ie_len = "
-            "%d",
-            __func__, head_ie_len, tail_ie_len);
-    } else {
-        pr_info("%s: IE exceed %d bytes!\n", __func__, IE_MAX_LEN);
-        return 1;
-    }
-
-    return 0;
-}
 #else
-static int vwifi_change_beacon(struct wiphy *wiphy,
-                               struct net_device *ndev,
-                               struct cfg80211_ap_update *info)
-{
-    struct vwifi_vif *vif = ndev_get_vwifi_vif(ndev);
-    int ie_offset = DOT11_MGMT_HDR_LEN + DOT11_BCN_PRB_FIXED_LEN;
-    int head_ie_len, tail_ie_len;
-
-    /* cfg80211 and some user-space programs treat IEs as two-part:
-     * 1. head: 802.11 beacon frame header + beacon IEs before TIM IE
-     * 2. tail: beacon IEs after TIM IE
-     * We combine them and store them in vif->beacon_ie.
-     */
     head_ie_len = info->beacon.head_len - ie_offset;
     tail_ie_len = info->beacon.tail_len;
-
+#endif
     if (likely(head_ie_len + tail_ie_len <= IE_MAX_LEN)) {
         vif->beacon_ie_len = head_ie_len + tail_ie_len;
         memset(vif->beacon_ie, 0, IE_MAX_LEN);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
+        memcpy(vif->beacon_ie, &info->head[ie_offset], head_ie_len);
+        memcpy(vif->beacon_ie + head_ie_len, info->tail, tail_ie_len);
+#else
         memcpy(vif->beacon_ie, &info->beacon.head[ie_offset], head_ie_len);
         memcpy(vif->beacon_ie + head_ie_len, info->beacon.tail, tail_ie_len);
-
+#endif
         pr_info(
             "%s: head_ie_len (before TIM IE) = %d, tail_ie_len = "
             "%d",
@@ -1647,7 +1626,7 @@ static int vwifi_change_beacon(struct wiphy *wiphy,
 
     return 0;
 }
-#endif
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 static int vwifi_add_key(struct wiphy *wiphy,
                          struct net_device *ndev,
