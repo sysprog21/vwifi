@@ -454,7 +454,8 @@ static void inform_bss(struct vwifi_vif *vif)
         struct cfg80211_inform_bss data = {
             /* the only channel */
             .chan = &ap->wdev.wiphy->bands[NL80211_BAND_2GHZ]->channels[0],
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
+#else
             .scan_width = NL80211_BSS_CHAN_WIDTH_20,
 #endif
             .signal = DBM_TO_MBM(rand_int_smooth(-100, -30, jiffies)),
@@ -531,7 +532,8 @@ static enum hrtimer_restart vwifi_beacon(struct hrtimer *timer)
         .boottime_ns = ktime_get_boottime_ns(),
         .chan = vif->channel,
     };
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
+#else
     switch (vif->bw) {
     case NL80211_CHAN_WIDTH_5:
         bss_meta.scan_width = NL80211_BSS_CHAN_WIDTH_5;
@@ -1582,10 +1584,10 @@ static int vwifi_stop_ap(struct wiphy *wiphy, struct net_device *ndev)
 
 static int vwifi_change_beacon(struct wiphy *wiphy,
                                struct net_device *ndev,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
-                               struct cfg80211_beacon_data *info
-#else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
                                struct cfg80211_ap_update *info
+#else
+                               struct cfg80211_beacon_data *info
 #endif
 )
 {
@@ -1598,22 +1600,22 @@ static int vwifi_change_beacon(struct wiphy *wiphy,
      * 2. tail: beacon IEs after TIM IE
      * We combine them and store them in vif->beacon_ie.
      */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
-    head_ie_len = info->head_len - ie_offset;
-    tail_ie_len = info->tail_len;
-#else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
     head_ie_len = info->beacon.head_len - ie_offset;
     tail_ie_len = info->beacon.tail_len;
+#else
+    head_ie_len = info->head_len - ie_offset;
+    tail_ie_len = info->tail_len;
 #endif
     if (likely(head_ie_len + tail_ie_len <= IE_MAX_LEN)) {
         vif->beacon_ie_len = head_ie_len + tail_ie_len;
         memset(vif->beacon_ie, 0, IE_MAX_LEN);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
-        memcpy(vif->beacon_ie, &info->head[ie_offset], head_ie_len);
-        memcpy(vif->beacon_ie + head_ie_len, info->tail, tail_ie_len);
-#else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
         memcpy(vif->beacon_ie, &info->beacon.head[ie_offset], head_ie_len);
         memcpy(vif->beacon_ie + head_ie_len, info->beacon.tail, tail_ie_len);
+#else
+        memcpy(vif->beacon_ie, &info->head[ie_offset], head_ie_len);
+        memcpy(vif->beacon_ie + head_ie_len, info->tail, tail_ie_len);
 #endif
         pr_info(
             "%s: head_ie_len (before TIM IE) = %d, tail_ie_len = "
@@ -2565,7 +2567,8 @@ static void vwifi_virtio_mgmt_rx_scan_response(
     };
     struct cfg80211_inform_bss data = {
         .chan = &rx_channel,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
+#else
         .scan_width = NL80211_BSS_CHAN_WIDTH_20,
 #endif
         .signal = DBM_TO_MBM(rand_int_smooth(-100, -30, jiffies)),
