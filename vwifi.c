@@ -454,8 +454,7 @@ static void inform_bss(struct vwifi_vif *vif)
         struct cfg80211_inform_bss data = {
             /* the only channel */
             .chan = &ap->wdev.wiphy->bands[NL80211_BAND_2GHZ]->channels[0],
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
-#else
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
             .scan_width = NL80211_BSS_CHAN_WIDTH_20,
 #endif
             .signal = DBM_TO_MBM(rand_int_smooth(-100, -30, jiffies)),
@@ -532,8 +531,7 @@ static enum hrtimer_restart vwifi_beacon(struct hrtimer *timer)
         .boottime_ns = ktime_get_boottime_ns(),
         .chan = vif->channel,
     };
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
-#else
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
     switch (vif->bw) {
     case NL80211_CHAN_WIDTH_5:
         bss_meta.scan_width = NL80211_BSS_CHAN_WIDTH_5;
@@ -2567,8 +2565,7 @@ static void vwifi_virtio_mgmt_rx_scan_response(
     };
     struct cfg80211_inform_bss data = {
         .chan = &rx_channel,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
-#else
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
         .scan_width = NL80211_BSS_CHAN_WIDTH_20,
 #endif
         .signal = DBM_TO_MBM(rand_int_smooth(-100, -30, jiffies)),
