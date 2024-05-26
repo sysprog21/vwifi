@@ -92,7 +92,7 @@ bool denylist_send(char *denylist)
     nlh->nlmsg_pid = getpid();
     nlh->nlmsg_flags = 0;
 
-    strncpy(NLMSG_DATA(nlh), denylist, NLMSG_SPACE(MAX_PAYLOAD));
+    strncpy(NLMSG_DATA(nlh), denylist, MAX_PAYLOAD);
 
     struct iovec iov = {
         .iov_base = (void *) nlh,
