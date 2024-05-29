@@ -230,9 +230,9 @@ vw_phy2
 Assign the three interfaces to separate network namespaces.
 Please note that the `wiphy` is placed within the network namespace, and the interface associated with that wiphy will be contained within it.
 ```shell
-$ sudo iw phy $vw_phy0 set netns name ns0
-$ sudo iw phy $vw_phy1 set netns name ns1
-$ sudo iw phy $vw_phy2 set netns name ns2
+$ sudo iw phy vw_phy0 set netns name ns0
+$ sudo iw phy vw_phy1 set netns name ns1
+$ sudo iw phy vw_phy2 set netns name ns2
 ```
 
 ### Assigning IP Addresses to Each Interface
@@ -262,7 +262,7 @@ wpa_pairwise=CCMP
 
 Run `hostapd` on the interface `vw0`:
 ```shell	
-$ sudo ip netns exec ns0 hostapd -i vw0 -B hostapd.conf
+$ sudo ip netns exec ns0 hostapd -i vw0 -B scripts/hostapd.conf
 ```
 
 ### Running `wpa_supplicant` on the Station Mode Interfaces
@@ -277,9 +277,9 @@ network={
 Then run the `wpa_supplicant` on the interface `ns1` and `ns2`:
 ```shell
 $ sudo ip netns exec ns1 \
-       wpa_supplicant -i vw1 -B -c wpa_supplicant.conf
+       wpa_supplicant -i vw1 -B -c scripts/wpa_supplicant.conf
 $ sudo ip netns exec ns2 \
-      wpa_supplicant -i vw2 -B -c wpa_supplicant.conf 
+      wpa_supplicant -i vw2 -B -c scripts/wpa_supplicant.conf 
 ```
 
 ### Validating the Connection
