@@ -1258,7 +1258,7 @@ static int vwifi_get_station(struct wiphy *wiphy,
      *
      * Number of Data Subcarriers: 52
      * Number of Coded Bits per Subcarrier per Stream: 6
-     * Coding: 6
+     * Coding: 5/6
      * OFDM Symbol Duration: 3.2 µs
      * Guard Interval Duration: 0.8 µs 
      * Thus, the data rate is 260 Mbps.
