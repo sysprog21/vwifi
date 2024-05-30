@@ -1219,7 +1219,9 @@ static int vwifi_get_station(struct wiphy *wiphy,
                     BIT_ULL(NL80211_STA_INFO_TX_BYTES) |
                     BIT_ULL(NL80211_STA_INFO_RX_BYTES) |
                     BIT_ULL(NL80211_STA_INFO_SIGNAL) |
-                    BIT_ULL(NL80211_STA_INFO_INACTIVE_TIME);
+                    BIT_ULL(NL80211_STA_INFO_INACTIVE_TIME)| 
+                    BIT_ULL(NL80211_STA_INFO_RX_BITRATE)|
+                    BIT_ULL(NL80211_STA_INFO_TX_BITRATE);
 
     if (vif->sme_state == SME_CONNECTED) {
         sinfo->filled |= BIT_ULL(NL80211_STA_INFO_CONNECTED_TIME);
@@ -1245,8 +1247,31 @@ static int vwifi_get_station(struct wiphy *wiphy,
     /* For CFG80211_SIGNAL_TYPE_MBM, value is expressed in dBm */
     sinfo->signal = rand_int_smooth(-100, -30, jiffies);
     sinfo->inactive_time = jiffies_to_msecs(jiffies - vif->active_time);
-    /* TODO: Emulate rate and mcs */
+    /* 
+     * Using 802.11n (HT) as the PHY, configure as follows:
+     *
+     * Modulation: 64-QAM
+     * Data Bandwidth: 20MHz
+     * Number of Spatial Streams: 4
+     * 
+     * According to the 802.11n (HT) modulation table, we have:
+     *
+     * Number of Data Subcarriers: 52
+     * Number of Coded Bits per Subcarrier per Stream: 6
+     * Coding: 6
+     * OFDM Symbol Duration: 3.2 µs
+     * Guard Interval Duration: 0.8 µs 
+     * Thus, the data rate is 260 Mbps.
+     */
+    sinfo->rxrate.flags |= RATE_INFO_FLAGS_MCS;
+    sinfo->rxrate.mcs = 31;
+    sinfo->rxrate.bw = RATE_INFO_BW_20;
+    sinfo->rxrate.n_bonded_ch = 1;
 
+    sinfo->txrate.flags |= RATE_INFO_FLAGS_MCS;
+    sinfo->txrate.mcs = 31;
+    sinfo->txrate.bw = RATE_INFO_BW_20;
+    sinfo->txrate.n_bonded_ch = 1;
     return 0;
 }
 
