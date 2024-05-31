@@ -1262,6 +1262,9 @@ static int vwifi_get_station(struct wiphy *wiphy,
      * OFDM Symbol Duration: 3.2 µs
      * Guard Interval Duration: 0.8 µs
      * Thus, the data rate is 260 Mbps.
+     * MCS table, Data Rate Formula :
+     * https://semfionetworks.com/blog/mcs-table-updated-with-80211ax-data-rates/
+     * IEEE 802.11n : https://zh.wikipedia.org/zh-tw/IEEE_802.11n
      */
     sinfo->rxrate.flags |= RATE_INFO_FLAGS_MCS;
     sinfo->rxrate.mcs = 31;
