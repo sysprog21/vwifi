@@ -155,6 +155,9 @@ struct vwifi_vif {
 
     /* Packet virtio header size */
     u8 vnet_hdr_len;
+
+    /* Transmit power */
+    s32 tx_power;
 };
 
 static int station = 2;
@@ -385,6 +388,20 @@ static inline struct vwifi_vif *ndev_get_vwifi_vif(struct net_device *ndev)
 static inline struct vwifi_vif *wdev_get_vwifi_vif(struct wireless_dev *wdev)
 {
     return container_of(wdev, struct vwifi_vif, wdev);
+}
+
+/* helper function to retrieve vif from wiphy */
+static struct vwifi_vif *wiphy_get_vwifi_vif(struct wiphy *wiphy)
+{
+    struct wireless_dev *wdev;
+    struct vwifi_vif *vif = NULL;
+
+    list_for_each_entry (wdev, &wiphy->wdev_list, list) {
+        vif = container_of(wdev, struct vwifi_vif, wdev);
+        break; /* Assuming only one virtual interface is present */
+    }
+
+    return vif;
 }
 
 static inline u32 vwifi_mac_to_32(const u8 *mac)
@@ -1840,6 +1857,64 @@ static int vwifi_delete_interface(struct vwifi_vif *vif)
     return 0;
 }
 
+/* Set transmit power for the virtual interface */
+static int vwifi_set_tx_power(struct wiphy *wiphy,
+                              struct wireless_dev *wdev,
+                              enum nl80211_tx_power_setting type,
+                              int mbm)
+{
+    struct vwifi_vif *vif = wiphy_get_vwifi_vif(wiphy);
+    /* Validate vif pointer */
+    if (!vif)
+        return -EINVAL;
+
+    if (mutex_lock_interruptible(&vif->lock))
+        return -ERESTARTSYS;
+
+    int power = MBM_TO_DBM(mbm);
+    switch (type) {
+    case NL80211_TX_POWER_AUTOMATIC:
+        /* Use default transmit power (11 dBm) */
+        vif->tx_power = 11;
+        break;
+
+    case NL80211_TX_POWER_LIMITED:
+        /* Restrict power limits to a specific value (0 ~ 18 dBm) */
+        if (power < 0)
+            vif->tx_power = 0;
+        else if (power > 18)
+            vif->tx_power = 18;
+        else
+            vif->tx_power = power;
+        break;
+
+    case NL80211_TX_POWER_FIXED:
+        /* Set power freely */
+        vif->tx_power = power;
+        break;
+
+    default:
+        return -EINVAL; /* Invalid parameter */
+    }
+
+    mutex_unlock(&vif->lock);
+
+    return 0;
+}
+
+/* Get transmit power from the virtual interface */
+static int vwifi_get_tx_power(struct wiphy *wiphy,
+                              struct wireless_dev *wdev,
+                              int *dbm)
+{
+    struct vwifi_vif *vif = wdev_get_vwifi_vif(wdev);
+    /* Validate vif pointer */
+    if (!vif)
+        return -EINVAL;
+    *dbm = vif->tx_power;
+    return 0;
+}
+
 /* Structure of functions for FullMAC 80211 drivers. Functions implemented
  * along with fields/flags in the wiphy structure represent driver features.
  * This module can only perform "scan" and "connect". Some functions cannot
@@ -1860,6 +1935,8 @@ static struct cfg80211_ops vwifi_cfg_ops = {
     .del_key = vwifi_del_key,
     .set_default_key = vwifi_set_default_key,
     .change_station = vwifi_change_station,
+    .set_tx_power = vwifi_set_tx_power,
+    .get_tx_power = vwifi_get_tx_power,
 };
 
 /* Macro for defining 2GHZ channel array */
@@ -2044,7 +2121,7 @@ static struct wiphy *vwifi_cfg80211_add(void)
     /* Signal type
      * CFG80211_SIGNAL_TYPE_UNSPEC allows us specify signal strength from 0 to
      * 100. The reasonable value for CFG80211_SIGNAL_TYPE_MBM is -3000 to -10000
-     * (mdBm).
+     * (mBm).
      */
     wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
 
