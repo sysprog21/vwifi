@@ -24,6 +24,11 @@ if [ $final_ret -eq 0 ]; then
     # to avoid device or resource busy error
     sleep 0.5
 
+    # set transmit power (mBm)
+    sudo iw dev vw0 set txpower auto
+    sudo iw dev vw1 set txpower fixed 1200
+    sudo iw dev vw2 set txpower fixed 1300
+
     # get phy number of each interface
     sudo iw dev > device.log
     vw0_phy=$(get_wiphy_name vw0)
