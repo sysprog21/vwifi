@@ -63,10 +63,11 @@ struct vwifi_context {
      * the whole lifetime.
      */
     struct mutex lock;
-    enum vwifi_state state;    /**< indicate the program state */
-    struct list_head vif_list; /**< maintaining all interfaces */
-    struct list_head ap_list;  /**< maintaining multiple AP */
-    char *denylist;            /**< maintaining the denylist */
+    enum vwifi_state state;     /**< indicate the program state */
+    struct list_head vif_list;  /**< maintaining all interfaces */
+    struct list_head ap_list;   /**< maintaining multiple AP */
+    struct list_head ibss_list; /**< maintaining all ibss devices */
+    char *denylist;             /**< maintaining the denylist */
 };
 
 static DEFINE_SPINLOCK(vif_list_lock);
@@ -81,7 +82,7 @@ static atomic_t vwifi_wiphy_counter = ATOMIC_INIT(0);
 
 /* Virtual interface pointed to by netdev_priv(). Fields in the structure are
  * interface-dependent. Every interface has its own vwifi_vif, regardless of the
- * interface mode (STA, AP, Ad-hoc...).
+ * interface mode (STA, AP, IBSS...).
  */
 struct vwifi_vif {
     struct wireless_dev wdev;
@@ -103,7 +104,7 @@ struct vwifi_vif {
 
     struct mutex lock;
 
-    /* Split logic for STA and AP mode */
+    /* Split logic for the interface mode */
     union {
         /* Structure for STA mode */
         struct {
@@ -137,6 +138,47 @@ struct vwifi_vif {
             struct hrtimer beacon_timer;
             struct ieee80211_channel *channel;
             enum nl80211_chan_width bw;
+        };
+        /* Structure for IBSS(ad hoc) mode */
+        struct {
+            /* List node for storing ibss devices (vwifi->ibss_list is the
+             * head), this field is for interface in IBSS mode.
+             */
+            struct list_head ibss_list;
+            /* defines the channel to use if no other IBSS to join can be found
+             */
+            struct cfg80211_chan_def ibss_chandef;
+            u16 ibss_beacon_int;
+            /* bitmap of basic rates */
+            u32 ibss_basic_rates;
+            /* The channel should be fixed -- do not search for IBSSs to join on
+             * other channels. */
+            bool ibss_channel_fixed;
+            /* This is a protected network, keys will be configured after
+             * joining */
+            bool ibss_privacy;
+            /* whether user space controls IEEE 802.1X port, i.e.,
+             * sets/clears %NL80211_STA_FLAG_AUTHORIZED. If true, the driver is
+             * required to assume that the port is unauthorized until authorized
+             * by user space. Otherwise, port is marked authorized by default.
+             */
+            bool ibss_control_port;
+            /* TRUE if userspace expects to exchange control
+             * port frames over NL80211 instead of the network interface.
+             */
+            bool ibss_control_port_over_nl80211;
+            /* whether user space controls DFS operation */
+            bool ibss_userspace_handles_dfs;
+            /* per-band multicast rate index + 1 (0: disabled) */
+            int ibss_mcast_rate[NUM_NL80211_BANDS];
+            /* HT Capabilities over-rides. */
+            struct ieee80211_ht_cap ibss_ht_capa;
+            /* The bits of ht_capa which are to be used. */
+            struct ieee80211_ht_cap ibss_ht_capa_mask;
+            /* static WEP keys */
+            struct key_params *ibss_wep_keys;
+            /* key index (0..3) of the default TX static WEP key */
+            int ibss_wep_tx_key;
         };
     };
 
@@ -506,6 +548,54 @@ static void inform_bss(struct vwifi_vif *vif)
     }
 }
 
+/* Helper function that prepares a structure with self-defined BSS information
+ * and "informs" the kernel about the "new" Independent BSS.
+ */
+static void ibss_inform_bss(struct vwifi_vif *vif)
+{
+    struct vwifi_vif *ibss;
+
+    list_for_each_entry (ibss, &vwifi->ibss_list, ibss_list) {
+        struct cfg80211_bss *bss = NULL;
+        struct cfg80211_inform_bss data = {
+            /* the only channel */
+            .chan = &ibss->wdev.wiphy->bands[NL80211_BAND_2GHZ]->channels[0],
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
+            .scan_width = NL80211_BSS_CHAN_WIDTH_20,
+#endif
+            .signal = DBM_TO_MBM(rand_int_smooth(-100, -30, jiffies)),
+        };
+        int capability = WLAN_CAPABILITY_IBSS;
+
+        if (ibss->ibss_privacy)
+            capability |= WLAN_CAPABILITY_PRIVACY;
+
+        pr_info("vwifi: %s performs scan, found %s (SSID: %s, BSSID: %pM)\n",
+                vif->ndev->name, ibss->ndev->name, ibss->ssid, ibss->bssid);
+        pr_info("cap = %d, beacon_ie_len = %d\n", capability,
+                ibss->beacon_ie_len);
+
+        /* Using the CLOCK_BOOTTIME clock, which remains unaffected by changes
+         * in the system time-of-day clock and includes any time that the
+         * system is suspended.
+         * This clock is suitable for synchronizing the machines in the BSS
+         * using tsf.
+         */
+        u64 tsf = div_u64(ktime_get_boottime_ns(), 1000);
+
+        /* It is possible to use cfg80211_inform_bss() instead. */
+        bss = cfg80211_inform_bss_data(
+            vif->wdev.wiphy, &data, CFG80211_BSS_FTYPE_UNKNOWN, ibss->bssid,
+            tsf, capability, ibss->ibss_beacon_int, ibss->beacon_ie,
+            ibss->beacon_ie_len, GFP_KERNEL);
+
+        /* cfg80211_inform_bss_data() returns cfg80211_bss structure reference
+         * counter of which should be decremented if it is unused.
+         */
+        cfg80211_put_bss(vif->wdev.wiphy, bss);
+    }
+}
+
 static void vwifi_beacon_inform_bss(struct vwifi_vif *ap,
                                     struct vwifi_vif *sta,
                                     struct cfg80211_inform_bss *bss_meta,
@@ -734,6 +824,10 @@ static int __vwifi_ndo_start_xmit(struct vwifi_vif *vif,
         pr_info("vwifi: AP %s (%pM) send packet to STA %s (%pM)\n",
                 vif->ndev->name, eth_hdr->h_source, dest_vif->ndev->name,
                 eth_hdr->h_dest);
+    } else if (vif->wdev.iftype == NL80211_IFTYPE_ADHOC) {
+        pr_info("vwifi: IBSS %s (%pM) send packet to IBSS %s (%pM)\n",
+                vif->ndev->name, eth_hdr->h_source, dest_vif->ndev->name,
+                eth_hdr->h_dest);
     }
 
     pkt = kmalloc(sizeof(struct vwifi_packet), GFP_KERNEL);
@@ -769,6 +863,10 @@ static int __vwifi_ndo_start_xmit(struct vwifi_vif *vif,
                 eth_hdr->h_source);
     } else if (dest_vif->wdev.iftype == NL80211_IFTYPE_AP) {
         pr_info("vwifi: AP %s (%pM) receive packet from STA %s (%pM)\n",
+                dest_vif->ndev->name, eth_hdr->h_dest, vif->ndev->name,
+                eth_hdr->h_source);
+    } else if (dest_vif->wdev.iftype == NL80211_IFTYPE_ADHOC) {
+        pr_info("vwifi: IBSS %s (%pM) receive packet from IBSS %s (%pM)\n",
                 dest_vif->ndev->name, eth_hdr->h_dest, vif->ndev->name,
                 eth_hdr->h_source);
     }
@@ -859,6 +957,49 @@ static netdev_tx_t vwifi_ndo_start_xmit(struct sk_buff *skb,
             }
         }
     }
+    /* TX by interface of IBSS(ad-hoc) mode */
+    else if (vif->wdev.iftype == NL80211_IFTYPE_ADHOC) {
+        /* Check if the packet is broadcasting */
+        if (is_broadcast_ether_addr(eth_hdr->h_dest)) {
+            list_for_each_entry (dest_vif, &vwifi->ibss_list, ibss_list) {
+                /* Don't send broadcast packet back to the source interface.
+                 */
+                if (ether_addr_equal(eth_hdr->h_source,
+                                     dest_vif->ndev->dev_addr))
+                    continue;
+                /* Don't send packet from dest_vif's denylist */
+                if (denylist_check(dest_vif->ndev->name, vif->ndev->name))
+                    continue;
+                /* Don't send packet to device with different SSID. */
+                if (strcmp(vif->ssid, dest_vif->ssid))
+                    continue;
+                /* Don't send packet to device with different BSSID. */
+                if (!ether_addr_equal(vif->bssid, dest_vif->bssid))
+                    continue;
+                if (__vwifi_ndo_start_xmit(vif, dest_vif, skb))
+                    count++;
+            }
+        }
+        /* The packet is unicasting */
+        else {
+            list_for_each_entry (dest_vif, &vwifi->ibss_list, ibss_list) {
+                if (ether_addr_equal(eth_hdr->h_dest,
+                                     dest_vif->ndev->dev_addr)) {
+                    /* Don't send packet from dest_vif's denylist */
+                    if (denylist_check(dest_vif->ndev->name, vif->ndev->name))
+                        continue;
+                    /* Don't send packet to device with different SSID. */
+                    if (strcmp(vif->ssid, dest_vif->ssid))
+                        continue;
+                    /* Don't send packet to device with different BSSID. */
+                    if (!ether_addr_equal(vif->bssid, dest_vif->bssid))
+                        continue;
+                    if (__vwifi_ndo_start_xmit(vif, dest_vif, skb))
+                        count++;
+                }
+            }
+        }
+    }
 
     if (!count)
         vif->stats.tx_dropped++;
@@ -895,6 +1036,7 @@ static void vwifi_scan_timeout_work(struct work_struct *w)
 
     /* inform with dummy BSS */
     inform_bss(vif);
+    ibss_inform_bss(vif);
 
     if (mutex_lock_interruptible(&vif->lock))
         return;
@@ -1440,6 +1582,10 @@ static int vwifi_change_iface(struct wiphy *wiphy,
     case NL80211_IFTYPE_AP:
         ndev->ieee80211_ptr->iftype = type;
         break;
+    case NL80211_IFTYPE_ADHOC:
+        pr_info("vwifi: %s start acting in IBSS mode.\n", ndev->name);
+        ndev->ieee80211_ptr->iftype = type;
+        break;
     default:
         pr_info("vwifi: invalid interface type %u\n", type);
         return -EINVAL;
@@ -1915,6 +2061,91 @@ static int vwifi_get_tx_power(struct wiphy *wiphy,
     return 0;
 }
 
+/* Make the device join a specific IBSS. */
+static int vwifi_join_ibss(struct wiphy *wiphy,
+                           struct net_device *ndev,
+                           struct cfg80211_ibss_params *params)
+{
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(ndev);
+    /* Validate vif pointer */
+    if (!vif)
+        return -EINVAL;
+    if (mutex_lock_interruptible(&vif->lock))
+        return -ERESTARTSYS;
+    /* Retrieve IBSS configuration parameters */
+    memcpy(vif->ssid, params->ssid, params->ssid_len);
+    vif->ibss_chandef = params->chandef;
+    vif->ssid_len = params->ssid_len;
+    /* When the BSSID is automatically generated by the system, it will not be
+     * passed as a parameter to the join function. */
+    if (params->bssid)
+        memcpy(vif->bssid, params->bssid, ETH_ALEN);
+    else {
+        /* Search for IBSS networks with WPA settings in the IBSS list. If a
+         * matching network exists, join it. Otherwise, create one. */
+        memcpy(vif->bssid, ndev->dev_addr, ETH_ALEN);
+        struct vwifi_vif *ibss_vif = NULL;
+        list_for_each_entry (ibss_vif, &vwifi->ibss_list, ibss_list) {
+            if (ibss_vif->ssid_len == vif->ssid_len &&
+                !memcmp(ibss_vif->ssid, vif->ssid, vif->ssid_len) &&
+                ibss_vif->ibss_chandef.center_freq1 ==
+                    vif->ibss_chandef.center_freq1) {
+                memcpy(vif->bssid, ibss_vif->bssid, ETH_ALEN);
+                break;
+            }
+        }
+    }
+    vif->beacon_ie_len = params->ie_len;
+    memcpy(vif->beacon_ie, params->ie, params->ie_len);
+    vif->ibss_beacon_int = params->beacon_interval;
+    vif->ibss_basic_rates = params->basic_rates;
+    vif->ibss_channel_fixed = params->channel_fixed;
+    vif->ibss_privacy = params->privacy;
+    vif->ibss_control_port = params->control_port;
+    vif->ibss_control_port_over_nl80211 = params->control_port_over_nl80211;
+    vif->ibss_userspace_handles_dfs = params->userspace_handles_dfs;
+    memcpy(vif->ibss_mcast_rate, params->mcast_rate,
+           sizeof(params->mcast_rate));
+    vif->ibss_ht_capa = params->ht_capa;
+    vif->ibss_ht_capa_mask = params->ht_capa_mask;
+    vif->ibss_wep_keys = params->wep_keys;
+    vif->ibss_wep_tx_key = params->wep_tx_key;
+
+    mutex_unlock(&vif->lock);
+
+    /* Insert ibss into global ibss_list */
+    if (mutex_lock_interruptible(&vwifi->lock))
+        return -ERESTARTSYS;
+
+    list_add_tail(&vif->ibss_list, &vwifi->ibss_list);
+
+    mutex_unlock(&vwifi->lock);
+
+    pr_info("vwifi : %s join %s.\n", vif->ndev->name, vif->ssid);
+
+    return 0;
+}
+
+/* Make the device leave the current IBSS. */
+static int vwifi_leave_ibss(struct wiphy *wiphy, struct net_device *ndev)
+{
+    struct vwifi_vif *vif = ndev_get_vwifi_vif(ndev);
+    /* Validate vif pointer */
+    if (!vif)
+        return -EINVAL;
+    /* Remove ibss from global ibss_list */
+    if (mutex_lock_interruptible(&vwifi->lock))
+        return -ERESTARTSYS;
+
+    list_del(&vif->ibss_list);
+
+    mutex_unlock(&vwifi->lock);
+
+    pr_info("vwifi : %s leave %s.\n", vif->ndev->name, vif->ssid);
+
+    return 0;
+}
+
 /* Structure of functions for FullMAC 80211 drivers. Functions implemented
  * along with fields/flags in the wiphy structure represent driver features.
  * This module can only perform "scan" and "connect". Some functions cannot
@@ -1937,6 +2168,8 @@ static struct cfg80211_ops vwifi_cfg_ops = {
     .change_station = vwifi_change_station,
     .set_tx_power = vwifi_set_tx_power,
     .get_tx_power = vwifi_get_tx_power,
+    .join_ibss = vwifi_join_ibss,
+    .leave_ibss = vwifi_leave_ibss,
 };
 
 /* Macro for defining 2GHZ channel array */
@@ -2075,8 +2308,8 @@ static struct wiphy *vwifi_cfg80211_add(void)
      * add other required types like  "BIT(NL80211_IFTYPE_STATION) |
      * BIT(NL80211_IFTYPE_AP)" etc.
      */
-    wiphy->interface_modes =
-        BIT(NL80211_IFTYPE_STATION) | BIT(NL80211_IFTYPE_AP);
+    wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
+                             BIT(NL80211_IFTYPE_AP) | BIT(NL80211_IFTYPE_ADHOC);
 
     for (band = NL80211_BAND_2GHZ; band < NUM_NL80211_BANDS; band++) {
         /* FIXME: add other band capabilities if needed, such as 40 width */
@@ -3096,6 +3329,7 @@ static int __init vwifi_init(void)
     mutex_init(&vwifi->lock);
     INIT_LIST_HEAD(&vwifi->vif_list);
     INIT_LIST_HEAD(&vwifi->ap_list);
+    INIT_LIST_HEAD(&vwifi->ibss_list);
     vwifi->denylist = kmalloc(sizeof(char) * MAX_DENYLIST_SIZE, GFP_KERNEL);
 
     for (int i = 0; i < station; i++) {
