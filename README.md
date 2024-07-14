@@ -36,6 +36,14 @@ $ pip3 install numpy matplotlib
 ```
 
 ## Testing environment (non-virtio)
+To test the network environment effectively, we utilize **Linux network namespaces**. These namespaces isolate network environments from the host system, providing distinct instances of network stacks with independent routes, firewall rules, and network devices.
+
+Without network namespaces, virtual interfaces created within the same namespace use the loopback device for packet transmission between them, as the kernel recognizes them as residing on the same host.
+
+In our testing setup, all interfaces created by `vwifi` are placed within an isolated network namespace. This approach ensures that each virtual interface operates independently, facilitating comprehensive testing of networking functionalities without interference from the host's network configuration.
+
+Below, we will conduct two separate tests: Infrastructure BSS and Independent BSS.
+### Infrastructure BSS
 <p align="center"><img src="assets/vwifi.png" alt="logo image" width=60%></p>
 
 The testing environment consists of **one AP and two STAs**.
@@ -48,15 +56,12 @@ The AP then performs the following actions based on the packet type:
 2. Broadcast: The AP forwards the packet to all other STAs in the network, except for the source STA, and then passes it to the protocol stack.
 3. Multicast: The AP treats multicast packets the same way as broadcast packets.
 
-To test the network environment, we can utilize the **Linux network namespace**.
-Linux network namespace allows us to isolate a network environment from the host system, providing its own routes, firewall rules, and network devices.
-Essentially, it creates a separate instance of the network stack.
+### Independent BSS
+<p align="center"><img src="assets/ibss.png" alt="logo image" width=75%></p>
 
-Without network namespace, when virtual interfaces are created that share the same network namespace and start transmitting/receiving packets between them,
-the kernel will use the loopback device for packet transmission/reception. This behavior occurs because the kernel identifies that the sender and receiver are on the same host.
+The testing environment consists of **two IBSS devices**.
 
-In conclusion, all the interfaces created by `vwifi` in the testing environment will be added to an isolated network namespace.
-
+The testing environment operates in IEEE 802.11 independent BSS. IBSS devices can communicate with any device in the same IBSS network **without the need to establish a connection beforehand**. However, devices in different IBSS networks cannot communicate with each other.
 ## Build and Run (non-virtio)
 
 To build the kernel module, execute the following command:
@@ -72,7 +77,7 @@ $ sudo modprobe cfg80211
 Insert the `vwifi` driver.
 This will create three interfaces (the "station" parameter can be modified according to preference):
 ```shell
-$ sudo insmod vwifi.ko station=3
+$ sudo insmod vwifi.ko station=5
 ```
 
 Please note that interfaces can only be created in station mode during the initialization phase.
@@ -85,7 +90,7 @@ To check the network interfaces, run the following command:
 $ ip link
 ```
 
-There should be entries starting with `vw0`, `vw1`, and `vw2`, which correspond to the interfaces created by `vwifi`.
+There should be entries starting with `vw0`, `vw1`, `vw2`, `vw3`, and `vw4`, which correspond to the interfaces created by `vwifi`.
 
 To view the available wireless interfaces, execute the following command:
 ```shell
@@ -94,24 +99,41 @@ $ sudo iw dev
 
 You should see something similar to the following output:
 ```
-phy#2
+phy#5
+	Interface vw4
+		ifindex 7
+		wdev 0x500000001
+		addr 00:76:77:34:00:00
+		type managed
+		txpower 0.00 dBm
+phy#4
+	Interface vw3
+		ifindex 6
+		wdev 0x400000001
+		addr 00:76:77:33:00:00
+		type managed
+		txpower 0.00 dBm
+phy#3
 	Interface vw2
 		ifindex 5
-		wdev 0x200000001
-		addr 00:6f:77:6c:32:00
+		wdev 0x300000001
+		addr 00:76:77:32:00:00
 		type managed
-phy#1
+		txpower 0.00 dBm
+phy#2
 	Interface vw1
 		ifindex 4
-		wdev 0x100000001
-		addr 00:6f:77:6c:31:00
+		wdev 0x200000001
+		addr 00:76:77:31:00:00
 		type managed
-phy#0
+		txpower 0.00 dBm
+phy#1
 	Interface vw0
 		ifindex 3
-		wdev 0x1
-		addr 00:6f:77:6c:30:00
+		wdev 0x100000001
+		addr 00:76:77:30:00:00
 		type managed
+		txpower 0.00 dBm
 ```
 
 As observed, each interface has its own phy (`struct wiphy`), allowing them to be placed into separate network namespaces.
@@ -125,6 +147,10 @@ $ sudo iw list
 
 Reference output:
 ```
+Wiphy vw_phy4
+(... omit)
+Wiphy vw_phy3
+(... omit)
 Wiphy vw_phy2
 (... omit)
 Wiphy vw_phy1
@@ -366,6 +392,175 @@ PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
 4 packets transmitted, 4 received, 0% packet loss, time 3058ms
 rtt min/avg/max/mdev = 0.054/0.141/0.342/0.117 ms
 ```
+### IBSS mode
+
+#### Creating Network Namespaces
+Create three network namespaces using the following commands:
+```shell
+$ sudo ip netns add ns3
+$ sudo ip netns add ns4
+```
+Find the `wiphy` name for the two interfaces.
+The index number for the `wiphy` name postfix might be different each time.
+Please use the following command for the ease of memorizing different index number everytime.
+```shell
+$ vw3_phy=$(sudo iw dev vw3 info | grep wiphy | awk '{print $2}')
+$ vw3_phy=$(sudo iw list | grep "wiphy index: $vw3_phy" -B 1 | grep Wiphy | awk '{print $2}')
+$ vw4_phy=$(sudo iw dev vw4 info | grep wiphy | awk '{print $2}')
+$ vw4_phy=$(sudo iw list | grep "wiphy index: $vw4_phy" -B 1 | grep Wiphy | awk '{print $2}')
+```
+Check whether the name of each `wiphy` is the same as the name listing under the command `sudo iw list`
+```shell
+$ echo $vw3_phy
+vw_phy3
+$ echo $vw4_phy
+vw_phy4
+```
+Assign the two interfaces to separate network namespaces.
+Please note that the `wiphy` is placed within the network namespace, and the interface associated with that wiphy will be contained within it.
+```shell
+$ sudo iw phy vw_phy3 set netns name ns3
+$ sudo iw phy vw_phy4 set netns name ns4
+```
+#### Assigning IP Addresses to Each Interface
+
+Now, assign an IP address to both interfaces using the following commands:
+```shell
+$ sudo ip netns exec ns3 ip addr add 10.0.0.4/24 dev vw3
+$ sudo ip netns exec ns4 ip addr add 10.0.0.5/24 dev vw4
+```
+There are two methods to configure an IBSS network: manual configuration or using WPA.
+#### Option1 : Manual configuration
+##### Switch to IBSS mode
+Switch device to IBSS mode using the following command : 
+
+***iw dev [interface] set type ibss***
+
+The following commands switch `vw3` and `vw4` to IBSS mode. 
+```shell
+$ sudo ip netns exec ns3 iw dev vw3 set type ibss
+$ sudo ip netns exec ns4 iw dev vw4 set type ibss
+```
+Check the information of `vw3`.
+```shell
+$ sudo ip netns exec ns3 iw dev vw3 info
+```
+You should see output similar to the following:
+```
+Interface vw3
+	ifindex 6
+	wdev 0x400000001
+	addr 00:76:77:33:00:00
+	type IBSS
+	wiphy 4
+	txpower 0.00 dBm
+```
+##### Join IBSS network
+```shell
+$ sudo ip netns exec ns3 ip link set vw3 up
+$ sudo ip netns exec ns4 ip link set vw4 up
+```
+Users can join a specific IBSS cell and configure additional settings using the command :
+
+***iw dev [interface] ibss join [SSID] [freq in MHz] [NOHT|HT20|HT40+|HT40-|5MHz|10MHz|80MHz] [fixed-freq] [fixed-bssid] [beacon-interval <TU>] [basic-rates <rate in Mbps,rate2,…>] [mcast-rate <rate in Mbps>] [key d:0:abcde]*** 
+
+If the IBSS cell does not already exist, it will be created.
+
+The following command makes `vw3` and `vw4` join the same IBSS cell with the SSID `ibss1` and specifies the frequency as 2412 MHz:
+```shell
+$ sudo ip netns exec ns3 iw dev vw3 ibss join ibss1 2412 NOHT fixed-freq 00:76:77:33:00:00 beacon-interval 200
+$ sudo ip netns exec ns4 iw dev vw4 ibss join ibss1 2412 NOHT fixed-freq 00:76:77:33:00:00 beacon-interval 200
+```
+Check the information of `vw3`.
+```shell
+$ sudo ip netns exec ns3 iw dev vw3 info
+```
+You should see output similar to the following:
+```
+Interface vw3
+	ifindex 6
+	wdev 0x400000001
+	addr 00:76:77:33:00:00
+	ssid ibss1
+	type IBSS
+	wiphy 4
+	txpower 0.00 dBm
+```
+#### Option2 : Using WPA
+```shell
+$ sudo ip netns exec ns3 ip link set vw3 up
+$ sudo ip netns exec ns4 ip link set vw4 up
+```
+Prepare the following script `wpa_supplicant_ibss.conf` (you can modify the script based on your needs):
+```shell
+network={
+    ssid="ibss1"
+    mode=1
+    frequency=2412
+    key_mgmt=WPA-PSK
+    proto=RSN
+    pairwise=CCMP
+    group=CCMP
+    psk="12345678"
+}
+```
+Using the command **wpa_supplicant**, configure `vw3` and `vw4` to join `ibss1`.
+```shell
+$ sudo ip netns exec ns3 wpa_supplicant -i vw3 -B -c scripts/wpa_supplicant_ibss.conf
+$ sudo ip netns exec ns4 wpa_supplicant -i vw4 -B -c scripts/wpa_supplicant_ibss.conf
+```
+Check the information of `vw3`.
+```shell
+$ sudo ip netns exec ns3 iw dev vw3 info
+```
+You should see output similar to the following:
+```
+Interface vw3
+	ifindex 6
+	wdev 0x400000001
+	addr 00:76:77:33:00:00
+	ssid ibss1
+	type IBSS
+	wiphy 4
+	txpower 0.00 dBm
+```
+#### Transmission/Receivement test
+To perform a ping test between two IBSS devices (`vw3` and `vw4`) in the same ibss cell (`ibss1`), use the following command:
+```shell
+$ sudo ip netns exec ns3 ping -c 1 10.0.0.5
+```
+You should see output similar to the following:
+```
+PING 10.0.0.5 (10.0.0.5) 56(84) bytes of data.
+64 bytes from 10.0.0.5: icmp_seq=1 ttl=64 time=0.093 ms
+
+--- 10.0.0.5 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.093/0.093/0.093/0.000 ms
+```
+#### Leave IBSS network
+To leave the current IBSS cell, use ***iw dev [interface] ibss leave***. 
+
+The following command makes `vw3` and `vw4` leave `ibss1`:
+```shell
+$ sudo ip netns exec ns3 iw dev vw3 ibss leave
+$ sudo ip netns exec ns4 iw dev vw4 ibss leave
+```
+Check the information of `vw3`.
+```shell
+$ sudo ip netns exec ns3 iw dev vw3 info
+```
+You should see output similar to the following:
+```
+Interface vw3
+	ifindex 6
+	wdev 0x400000001
+	addr 00:76:77:33:00:00
+	type IBSS
+	wiphy 4
+	txpower 0.00 dBm
+```
+
 ### vwifi-tool
 A userspace tool which supports more user-specific utilization for vwifi.
 Aiming to provide more flexibility and customization for users of vwifi.
