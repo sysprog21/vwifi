@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
       - name: validate coding style and functionality
         run: |
-            sudo apt-get install -q -y clang-format-12
+            sudo apt-get install -q -y clang-format-18
             .ci/check-format.sh
             .ci/build-n-run.sh
         shell: bash
