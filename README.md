@@ -699,7 +699,7 @@ We need a filesystem overlay for putting our `vwifi` kernel module and some user
 Also, we need network applications like `iw`, `hostapd` and `wpa_supplicant`.
 ```
 System configuration ---> Run a getty (login prompt) after boot ---> TTY port ---> ttyS0
-System configuration ---> Root filesystem overlay directories ---> <the place you wnat>
+System configuration ---> Root filesystem overlay directories ---> <the place you want>
 Kernel ---> Linux Kernel ---> no
 Target packages ---> Networking applications ---> hostapd
 Target packages ---> Networking applications ---> iw
