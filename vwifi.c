@@ -3167,8 +3167,23 @@ static int vwifi_virtio_init_vqs(struct virtio_device *vdev)
         [VWIFI_VQ_TX] = "tx",
     };
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+    struct virtqueue_info vqs_info[VWIFI_NUM_VQS];
+    /* Set ctx to false to maintain compatibility with legacy
+     * virtio_find_vqs() behavior, which implicitly passed NULL for ctx.
+     */
+    for (int i = 0; i < VWIFI_NUM_VQS; i++) {
+        vqs_info[i].callback = callbacks[i];
+        vqs_info[i].name = names[i];
+        vqs_info[i].ctx = false;
+    }
+
+    return virtio_find_vqs(vdev, VWIFI_NUM_VQS, vwifi_vqs, vqs_info, NULL);
+
+#else
     return virtio_find_vqs(vdev, VWIFI_NUM_VQS, vwifi_vqs, callbacks, names,
                            NULL);
+#endif
 }
 
 static void vwifi_virtio_fill_vq(struct virtqueue *vq, u8 vnet_hdr_len)
