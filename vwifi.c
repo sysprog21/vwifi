@@ -1677,8 +1677,13 @@ static int vwifi_start_ap(struct wiphy *wiphy,
 
     /* Initialize hrtimer of beacon */
     pr_info("vwifi: init beacon_timer.\n");
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+    hrtimer_setup(&vif->beacon_timer, vwifi_beacon, CLOCK_MONOTONIC,
+                  HRTIMER_MODE_ABS_SOFT);
+#else
     hrtimer_init(&vif->beacon_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_SOFT);
     vif->beacon_timer.function = vwifi_beacon;
+#endif
 
     if (!hrtimer_is_queued(&vif->beacon_timer)) {
         u64 tsf, until_tbtt;
