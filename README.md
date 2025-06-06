@@ -652,9 +652,9 @@ Enter the top directory of the Linux kernel source and use the following command
 ```shell
 $ make menuconfig
 ```
-The default kernel cofiguration will work for our testing environment, so just click `save` and we get `.config` on the top directory.
+The default kernel configuration will work for our testing environment, so just click `save` and we get `.config` on the top directory.
 
-Before building the kernel, please ensure that all the needed packges or libraries have been installed in your machine.
+Before building the kernel, please ensure that all the needed packages or libraries have been installed in your machine.
 
 Then Build the kernel:
 ```shell
@@ -694,7 +694,7 @@ The `qemu_x86_64_defconfig` configuration will not fit the testing environment, 
 $ make menuconfig
 ```
 
-We need a filesystem overlay for putting our `vwifi` kernel module and some user program's configuration file into the VM, so choose a place for the filesystem overlay (we recommand creating an empty directory for it).
+We need a filesystem overlay for putting our `vwifi` kernel module and some user program's configuration file into the VM, so choose a place for the filesystem overlay (we recommend creating an empty directory for it).
 
 Also, we need network applications like `iw`, `hostapd` and `wpa_supplicant`.
 ```
