@@ -1403,8 +1403,18 @@ static int vwifi_get_station(struct wiphy *wiphy,
     sinfo->tx_failed = vif->stats.tx_dropped;
     sinfo->tx_bytes = vif->stats.tx_bytes;
     sinfo->rx_bytes = vif->stats.rx_bytes;
+
+    /* Log byte counters for debugging */ 
+    pr_info(
+        "vwifi: Station %pM tx_bytes %llu, rx_bytes %llu, tx_packets %u, "
+        "rx_packets %u, tx_failed %u\n",
+        mac, sinfo->tx_bytes, sinfo->rx_bytes, sinfo->tx_packets,
+        sinfo->rx_packets, sinfo->tx_failed);
+
     /* For CFG80211_SIGNAL_TYPE_MBM, value is expressed in dBm */
     sinfo->signal = rand_int_smooth(-100, -30, jiffies);
+    pr_info("vwifi: Station %pM signal %d dBm (raw)\n", mac,
+            sinfo->signal); 
     sinfo->inactive_time = jiffies_to_msecs(jiffies - vif->active_time);
     /*
      * Using 802.11n (HT) as the PHY, configure as follows:
@@ -1425,15 +1435,53 @@ static int vwifi_get_station(struct wiphy *wiphy,
      * https://semfionetworks.com/blog/mcs-table-updated-with-80211ax-data-rates/
      * IEEE 802.11n : https://zh.wikipedia.org/zh-tw/IEEE_802.11n
      */
-    sinfo->rxrate.flags |= RATE_INFO_FLAGS_MCS;
-    sinfo->rxrate.mcs = 31;
+    /* Log byte counters for debugging */
+    pr_info("vwifi: Station %pM tx_bytes %llu, rx_bytes %llu\n", mac,
+            sinfo->tx_bytes, sinfo->rx_bytes);
+
+    /* Dynamic modulation based on signal strength */
+    int mcs_index;
+    const char *modulation;
+    unsigned int data_rate_mbps;
+    if (sinfo->signal > -50) {
+        /* Strong signal: 64-QAM, MCS 31 */
+        mcs_index = 31;
+        modulation = "64-QAM";
+    } else if (sinfo->signal > -70 && sinfo->signal <= -50) {
+        /* Medium signal: 16-QAM, MCS 23 */
+        mcs_index = 23;
+        modulation = "16-QAM";
+    } else if (sinfo->signal > -90 && sinfo->signal <= -70) {
+        /* Weak signal: QPSK, MCS 15 */
+        mcs_index = 15;
+        modulation = "QPSK";
+    } else {
+        /* Very weak signal: BPSK, MCS 7 */
+        mcs_index = 7;
+        modulation = "BPSK";
+    }
+
+    /* Log signal, modulation, and data rate for debugging */
+    pr_info(
+        "vwifi: Station %pM signal %d dBm, using modulation %s (MCS %d, %u "
+        "Mbps)\n",
+        mac, sinfo->signal, modulation, mcs_index, data_rate_mbps);
+
+    /* Configure RX and TX rates */
+    sinfo->rxrate.flags = RATE_INFO_FLAGS_MCS;
+    sinfo->rxrate.mcs = mcs_index;
     sinfo->rxrate.bw = RATE_INFO_BW_20;
     sinfo->rxrate.n_bonded_ch = 1;
 
-    sinfo->txrate.flags |= RATE_INFO_FLAGS_MCS;
-    sinfo->txrate.mcs = 31;
+    sinfo->txrate.flags = RATE_INFO_FLAGS_MCS;
+    sinfo->txrate.mcs = mcs_index;
     sinfo->txrate.bw = RATE_INFO_BW_20;
     sinfo->txrate.n_bonded_ch = 1;
+
+    /* Log rate configuration for verification */
+    pr_info("vwifi: Station %pM txrate MCS %d, rxrate MCS %d\n", mac,
+            sinfo->txrate.mcs, sinfo->rxrate.mcs);
+
     return 0;
 }
 
