@@ -88,6 +88,8 @@ struct vwifi_vif {
     struct wireless_dev wdev;
     struct net_device *ndev;
     struct net_device_stats stats;
+    int manual_mcs;      
+    bool manual_mcs_set; 
 
     size_t ssid_len;
     /* Currently connected BSS id */
@@ -1435,37 +1437,51 @@ static int vwifi_get_station(struct wiphy *wiphy,
      * https://semfionetworks.com/blog/mcs-table-updated-with-80211ax-data-rates/
      * IEEE 802.11n : https://zh.wikipedia.org/zh-tw/IEEE_802.11n
      */
-    /* Log byte counters for debugging */
-    pr_info("vwifi: Station %pM tx_bytes %llu, rx_bytes %llu\n", mac,
-            sinfo->tx_bytes, sinfo->rx_bytes);
-
-    /* Dynamic modulation based on signal strength */
+    /* Check vif->manual_mcs_set to use vif->manual_mcs if set;
+     * Assign modulation string for manual MCS ; else auto change based
+     * on signal strength
+     */
     int mcs_index;
     const char *modulation;
-    unsigned int data_rate_mbps;
-    if (sinfo->signal > -50) {
-        /* Strong signal: 64-QAM, MCS 31 */
-        mcs_index = 31;
-        modulation = "64-QAM";
-    } else if (sinfo->signal > -70 && sinfo->signal <= -50) {
-        /* Medium signal: 16-QAM, MCS 23 */
-        mcs_index = 23;
-        modulation = "16-QAM";
-    } else if (sinfo->signal > -90 && sinfo->signal <= -70) {
-        /* Weak signal: QPSK, MCS 15 */
-        mcs_index = 15;
-        modulation = "QPSK";
+    if (vif->manual_mcs_set) {
+        mcs_index = vif->manual_mcs;
+        switch (mcs_index) {
+        case 7:
+            modulation = "BPSK";
+            break;
+        case 15:
+            modulation = "QPSK";
+            break;
+        case 23:
+            modulation = "16-QAM";
+            break;
+        case 31:
+            modulation = "64-QAM";
+            break;
+        default:
+            modulation = "Unknown";
+            break;
+        }
+        pr_info("vwifi: Station %pM using manual MCS %d (%s)\n", mac, mcs_index,
+                modulation);
     } else {
-        /* Very weak signal: BPSK, MCS 7 */
-        mcs_index = 7;
-        modulation = "BPSK";
+        if (sinfo->signal > -50) {
+            mcs_index = 31;
+            modulation = "64-QAM";
+        } else if (sinfo->signal > -70 && sinfo->signal <= -50) {
+            mcs_index = 23;
+            modulation = "16-QAM";
+        } else if (sinfo->signal > -90 && sinfo->signal <= -70) {
+            mcs_index = 15;
+            modulation = "QPSK";
+        } else {
+            mcs_index = 7;
+            modulation = "BPSK";
+        }
+        pr_info(
+            "vwifi: Station %pM signal %d dBm, using modulation %s (MCS %d)\n",
+            mac, sinfo->signal, modulation, mcs_index);
     }
-
-    /* Log signal, modulation, and data rate for debugging */
-    pr_info(
-        "vwifi: Station %pM signal %d dBm, using modulation %s (MCS %d, %u "
-        "Mbps)\n",
-        mac, sinfo->signal, modulation, mcs_index, data_rate_mbps);
 
     /* Configure RX and TX rates */
     sinfo->rxrate.flags = RATE_INFO_FLAGS_MCS;
@@ -2209,6 +2225,66 @@ static int vwifi_leave_ibss(struct wiphy *wiphy, struct net_device *ndev)
 
     return 0;
 }
+/* Callback to handle manual bitrate configuration via iw */
+static int vwifi_set_bitrate_mask(struct wiphy *wiphy,
+                                  struct net_device *dev,
+                                  unsigned int link_id,
+                                  const u8 *peer,
+                                  const struct cfg80211_bitrate_mask *mask)
+{
+    struct vwifi_vif *vif = netdev_priv(dev);
+    int mcs_index = -1;
+
+    if (!vif) {
+        pr_err("vwifi: Failed to get vwifi_vif for dev %s\n", dev->name);
+        return -EINVAL;
+    }
+
+    if (vif->sme_state != SME_CONNECTED) {
+        pr_err("vwifi: Dev %s not connected, cannot set bitrate\n", dev->name);
+        return -EINVAL;
+    }
+
+    pr_info("vwifi: set_bitrate_mask called for dev %s, link_id %u, peer %pM\n",
+            dev->name, link_id, peer ? peer : vif->bssid);
+    pr_info("vwifi: 2.4GHz MCS mask: %02x %02x %02x %02x\n",
+            mask->control[NL80211_BAND_2GHZ].ht_mcs[0],
+            mask->control[NL80211_BAND_2GHZ].ht_mcs[1],
+            mask->control[NL80211_BAND_2GHZ].ht_mcs[2],
+            mask->control[NL80211_BAND_2GHZ].ht_mcs[3]);
+
+    /* Find the requested MCS index */
+    for (int i = 0; i < 4; i++) {
+        if (mask->control[NL80211_BAND_2GHZ].ht_mcs[i]) {
+            for (int j = 0; j < 8; j++) {
+                if (mask->control[NL80211_BAND_2GHZ].ht_mcs[i] & (1 << j)) {
+                    mcs_index = i * 8 + j;
+                    pr_info("vwifi: Requested MCS index %d\n", mcs_index);
+                    break;
+                }
+            }
+            if (mcs_index != -1)
+                break;
+        }
+    }
+
+    if (mcs_index == -1) {
+        pr_err("vwifi: No valid MCS index found\n");
+        return -EINVAL;
+    }
+
+    if (mcs_index != 7 && mcs_index != 15 && mcs_index != 23 &&
+        mcs_index != 31) {
+        pr_err("vwifi: Unsupported MCS index %d\n", mcs_index);
+        return -EINVAL;
+    }
+
+    vif->manual_mcs = mcs_index;
+    vif->manual_mcs_set = true;
+    pr_info("vwifi: Set manual MCS %d for dev %s\n", mcs_index, dev->name);
+
+    return 0;
+}
 
 /* Structure of functions for FullMAC 80211 drivers. Functions implemented
  * along with fields/flags in the wiphy structure represent driver features.
@@ -2234,6 +2310,7 @@ static struct cfg80211_ops vwifi_cfg_ops = {
     .get_tx_power = vwifi_get_tx_power,
     .join_ibss = vwifi_join_ibss,
     .leave_ibss = vwifi_leave_ibss,
+    .set_bitrate_mask = vwifi_set_bitrate_mask,
 };
 
 /* Macro for defining 2GHZ channel array */
@@ -2288,8 +2365,28 @@ static const struct ieee80211_rate vwifi_supported_rates[] = {
 };
 
 /* Describes supported band of 2GHz. */
-static struct ieee80211_supported_band nf_band_2ghz;
-
+static struct ieee80211_supported_band nf_band_2ghz = {
+    .band = NL80211_BAND_2GHZ,
+    .channels = vwifi_supported_channels_2ghz,
+    .n_channels = ARRAY_SIZE(vwifi_supported_channels_2ghz),
+    .bitrates = vwifi_supported_rates,
+    .n_bitrates = ARRAY_SIZE(vwifi_supported_rates),
+    .ht_cap =
+        {
+            .ht_supported = true,
+            .cap = IEEE80211_HT_CAP_SGI_20 | IEEE80211_HT_CAP_GRN_FLD |
+                   IEEE80211_HT_CAP_MAX_AMSDU |
+                   IEEE80211_HT_CAP_SUP_WIDTH_20_40,
+            .mcs =
+                {
+                    .rx_mask = {0xff, 0xff, 0xff, 0xff}, /* MCS 0-31 */
+                    .rx_highest = cpu_to_le16(300),
+                    .tx_params = IEEE80211_HT_MCS_TX_DEFINED,
+                },
+            .ampdu_factor = IEEE80211_HT_MAX_AMPDU_64K,
+            .ampdu_density = IEEE80211_HT_MPDU_DENSITY_16,
+        },
+};
 /* Describes supported band of 5GHz. */
 static struct ieee80211_supported_band nf_band_5ghz;
 
