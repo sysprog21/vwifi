@@ -88,8 +88,8 @@ struct vwifi_vif {
     struct wireless_dev wdev;
     struct net_device *ndev;
     struct net_device_stats stats;
-    int manual_mcs;      
-    bool manual_mcs_set; 
+    int manual_mcs;
+    bool manual_mcs_set;
 
     size_t ssid_len;
     /* Currently connected BSS id */
@@ -1406,7 +1406,7 @@ static int vwifi_get_station(struct wiphy *wiphy,
     sinfo->tx_bytes = vif->stats.tx_bytes;
     sinfo->rx_bytes = vif->stats.rx_bytes;
 
-    /* Log byte counters for debugging */ 
+    /* Log byte counters for debugging */
     pr_info(
         "vwifi: Station %pM tx_bytes %llu, rx_bytes %llu, tx_packets %u, "
         "rx_packets %u, tx_failed %u\n",
@@ -1415,8 +1415,7 @@ static int vwifi_get_station(struct wiphy *wiphy,
 
     /* For CFG80211_SIGNAL_TYPE_MBM, value is expressed in dBm */
     sinfo->signal = rand_int_smooth(-100, -30, jiffies);
-    pr_info("vwifi: Station %pM signal %d dBm (raw)\n", mac,
-            sinfo->signal); 
+    pr_info("vwifi: Station %pM signal %d dBm (raw)\n", mac, sinfo->signal);
     sinfo->inactive_time = jiffies_to_msecs(jiffies - vif->active_time);
     /*
      * Using 802.11n (HT) as the PHY, configure as follows:
@@ -1437,52 +1436,79 @@ static int vwifi_get_station(struct wiphy *wiphy,
      * https://semfionetworks.com/blog/mcs-table-updated-with-80211ax-data-rates/
      * IEEE 802.11n : https://zh.wikipedia.org/zh-tw/IEEE_802.11n
      */
+    
     /* Check vif->manual_mcs_set to use vif->manual_mcs if set;
      * Assign modulation string for manual MCS ; else auto change based
      * on signal strength
      */
     int mcs_index;
     const char *modulation;
+    const char *coding_rate;
     if (vif->manual_mcs_set) {
         mcs_index = vif->manual_mcs;
         switch (mcs_index) {
-        case 7:
+        case 24:
             modulation = "BPSK";
+            coding_rate = "1/2";
             break;
-        case 15:
+        case 25:
             modulation = "QPSK";
+            coding_rate = "1/2";
             break;
-        case 23:
+        case 26:
+            modulation = "QPSK";
+            coding_rate = "3/4";
+            break;
+        case 27:
             modulation = "16-QAM";
+            coding_rate = "1/2";
+            break;
+        case 28:
+            modulation = "16-QAM";
+            coding_rate = "3/4";
+            break;
+        case 29:
+            modulation = "64-QAM";
+            coding_rate = "2/3";
+            break;
+        case 30:
+            modulation = "64-QAM";
+            coding_rate = "3/4";
             break;
         case 31:
             modulation = "64-QAM";
+            coding_rate = "5/6";
             break;
         default:
-            modulation = "Unknown";
+            pr_err("vwifi: Unsupported MCS index %d\n", mcs_index);
+            mcs_index = 24; /* Default to lowest 4-stream MCS */
+            modulation = "BPSK";
+            coding_rate = "1/2";
             break;
         }
-        pr_info("vwifi: Station %pM using manual MCS %d (%s)\n", mac, mcs_index,
-                modulation);
+        pr_info("vwifi: Station %pM using manual MCS %d (%s, %s)\n", mac,
+                mcs_index, modulation, coding_rate);
     } else {
         if (sinfo->signal > -50) {
             mcs_index = 31;
             modulation = "64-QAM";
+            coding_rate = "5/6";
         } else if (sinfo->signal > -70 && sinfo->signal <= -50) {
-            mcs_index = 23;
+            mcs_index = 28;
             modulation = "16-QAM";
+            coding_rate = "3/4";
         } else if (sinfo->signal > -90 && sinfo->signal <= -70) {
-            mcs_index = 15;
+            mcs_index = 25;
             modulation = "QPSK";
+            coding_rate = "1/2";
         } else {
-            mcs_index = 7;
+            mcs_index = 24;
             modulation = "BPSK";
+            coding_rate = "1/2";
         }
-        pr_info(
-            "vwifi: Station %pM signal %d dBm, using modulation %s (MCS %d)\n",
-            mac, sinfo->signal, modulation, mcs_index);
+        pr_info("vwifi: Station %pM signal %d dBm, using MCS %d (%s, %s)\n",
+                mac, sinfo->signal, mcs_index, modulation, coding_rate);
     }
-
     /* Configure RX and TX rates */
     sinfo->rxrate.flags = RATE_INFO_FLAGS_MCS;
     sinfo->rxrate.mcs = mcs_index;
@@ -1497,7 +1523,6 @@ static int vwifi_get_station(struct wiphy *wiphy,
     /* Log rate configuration for verification */
     pr_info("vwifi: Station %pM txrate MCS %d, rxrate MCS %d\n", mac,
             sinfo->txrate.mcs, sinfo->rxrate.mcs);
-
     return 0;
 }
 
@@ -2273,8 +2298,8 @@ static int vwifi_set_bitrate_mask(struct wiphy *wiphy,
         return -EINVAL;
     }
 
-    if (mcs_index != 7 && mcs_index != 15 && mcs_index != 23 &&
-        mcs_index != 31) {
+    /* Restrict to supported 4-stream MCS indices 24–31 */
+    if (mcs_index < 24 || mcs_index > 31) {
         pr_err("vwifi: Unsupported MCS index %d\n", mcs_index);
         return -EINVAL;
     }
@@ -2364,7 +2389,6 @@ static const struct ieee80211_rate vwifi_supported_rates[] = {
     RATE_ENT(360, 0x200), RATE_ENT(480, 0x400), RATE_ENT(540, 0x800),
 };
 
-/* Describes supported band of 2GHz. */
 static struct ieee80211_supported_band nf_band_2ghz = {
     .band = NL80211_BAND_2GHZ,
     .channels = vwifi_supported_channels_2ghz,
