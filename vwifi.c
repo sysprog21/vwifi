@@ -1,6 +1,7 @@
 #include <linux/etherdevice.h>
 #include <linux/hashtable.h>
 #include <linux/hrtimer.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/random.h>
@@ -34,6 +35,12 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 #define IE_MAX_LEN 512
 
 #define SCAN_TIMEOUT_MS 100 /*< millisecond */
+
+#define VWIFI_ALL_RATES_2GHZ 0x0FFF
+#define VWIFI_ALL_RATES_5GHZ 0x0FF0  // bit 4~11 set
+
+static const struct ieee80211_rate vwifi_supported_rates[];
+static const int vwifi_supported_rates_count = 12;
 
 /* Note: vwifi_cipher_suites is an array of int defining which cipher suites
  * are supported. A pointer to this array and the number of entries is passed
@@ -88,6 +95,7 @@ struct vwifi_vif {
     struct wireless_dev wdev;
     struct net_device *ndev;
     struct net_device_stats stats;
+    struct cfg80211_bitrate_mask bitrate_mask;
 
     size_t ssid_len;
     /* Currently connected BSS id */
@@ -205,6 +213,10 @@ struct vwifi_vif {
 static int station = 2;
 module_param(station, int, 0444);
 MODULE_PARM_DESC(station, "Number of virtual interfaces running in STA mode.");
+
+static int ap = 0;
+module_param(ap, int, 0444);
+MODULE_PARM_DESC(ap, "number of AP mode interfaces to create");
 
 /* Global context */
 static struct vwifi_context *vwifi = NULL;
@@ -548,6 +560,46 @@ static void inform_bss(struct vwifi_vif *vif)
     }
 }
 
+static int vwifi_set_bitrate_mask(struct wiphy *wiphy,
+                                  struct net_device *dev,
+                                  unsigned int link_id,
+                                  const u8 *peer,
+                                  const struct cfg80211_bitrate_mask *mask)
+{
+    struct vwifi_vif *vif = netdev_priv(dev);
+
+    if (!(dev->flags & IFF_UP) || !netif_running(dev)) {
+        return -ENETDOWN;
+    }
+
+    bool has_valid_rate = false;
+
+    for (int band = 0; band < NUM_NL80211_BANDS; band++) {
+        u32 user_mask = mask->control[band].legacy;
+        u32 basic_mask = 0;
+
+        if (band == NL80211_BAND_2GHZ)
+            basic_mask = VWIFI_ALL_RATES_2GHZ;
+        else if (band == NL80211_BAND_5GHZ)
+            basic_mask = VWIFI_ALL_RATES_5GHZ;
+        else
+            continue;
+
+        if (user_mask & basic_mask) {
+            has_valid_rate = true;
+            break;
+        }
+    }
+
+    if (!has_valid_rate)
+        return -EINVAL;
+
+    memcpy(&vif->bitrate_mask, mask, sizeof(*mask));
+    pr_info("vwifi: bitrate mask saved. legacy 2.4GHz = 0x%x\n",
+            mask->control[NL80211_BAND_2GHZ].legacy);
+    return 0;
+}
+
 /* Helper function that prepares a structure with self-defined BSS information
  * and "informs" the kernel about the "new" Independent BSS.
  */
@@ -871,6 +923,26 @@ static int __vwifi_ndo_start_xmit(struct vwifi_vif *vif,
                 eth_hdr->h_source);
     }
 
+    int bitrate_kbps = 0;
+    const struct cfg80211_bitrate_mask *mask = &vif->bitrate_mask;
+
+    for (int band = 0; band < NUM_NL80211_BANDS; band++) {
+        u32 mask_val = mask->control[band].legacy;
+        if (mask_val) {
+            for (int i = 0; i < vwifi_supported_rates_count; i++) {
+                if (mask_val & (1 << i)) {
+                    bitrate_kbps = vwifi_supported_rates[i].bitrate * 100;
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    if (bitrate_kbps > 0) {
+        int delay_us = (datalen * 8 * 1000) / bitrate_kbps;
+        udelay(delay_us);
+    }
     /* Directly send to rx_queue, simulate the rx interrupt */
     vwifi_rx(dest_vif->ndev);
 
@@ -1425,15 +1497,40 @@ static int vwifi_get_station(struct wiphy *wiphy,
      * https://semfionetworks.com/blog/mcs-table-updated-with-80211ax-data-rates/
      * IEEE 802.11n : https://zh.wikipedia.org/zh-tw/IEEE_802.11n
      */
-    sinfo->rxrate.flags |= RATE_INFO_FLAGS_MCS;
-    sinfo->rxrate.mcs = 31;
-    sinfo->rxrate.bw = RATE_INFO_BW_20;
-    sinfo->rxrate.n_bonded_ch = 1;
+    const struct cfg80211_bitrate_mask *mask = &vif->bitrate_mask;
+    bool legacy_rate_set = false;
 
-    sinfo->txrate.flags |= RATE_INFO_FLAGS_MCS;
-    sinfo->txrate.mcs = 31;
-    sinfo->txrate.bw = RATE_INFO_BW_20;
-    sinfo->txrate.n_bonded_ch = 1;
+    for (int band = 0; band < NUM_NL80211_BANDS; band++) {
+        u32 mask_val = mask->control[band].legacy;
+        if (mask_val) {
+            int bitrate = 0;
+            for (int i = 0; i < 32; i++) {
+                if (mask_val & (1 << i)) {
+                    bitrate = vwifi_supported_rates[i].bitrate;
+                    break;
+                }
+            }
+
+            if (bitrate > 0) {
+                sinfo->txrate.legacy = bitrate;
+                sinfo->rxrate.legacy = bitrate;
+                legacy_rate_set = true;
+                break;
+            }
+        }
+    }
+
+    if (!legacy_rate_set) {
+        sinfo->txrate.flags |= RATE_INFO_FLAGS_MCS;
+        sinfo->txrate.mcs = 31;
+        sinfo->txrate.bw = RATE_INFO_BW_20;
+        sinfo->txrate.n_bonded_ch = 1;
+
+        sinfo->rxrate.flags |= RATE_INFO_FLAGS_MCS;
+        sinfo->rxrate.mcs = 31;
+        sinfo->rxrate.bw = RATE_INFO_BW_20;
+        sinfo->rxrate.n_bonded_ch = 1;
+    }
     return 0;
 }
 
@@ -2170,6 +2267,7 @@ static struct cfg80211_ops vwifi_cfg_ops = {
     .get_tx_power = vwifi_get_tx_power,
     .join_ibss = vwifi_join_ibss,
     .leave_ibss = vwifi_leave_ibss,
+    .set_bitrate_mask = vwifi_set_bitrate_mask,
 };
 
 /* Macro for defining 2GHZ channel array */
@@ -3333,6 +3431,14 @@ static int __init vwifi_init(void)
     vwifi->denylist = kmalloc(sizeof(char) * MAX_DENYLIST_SIZE, GFP_KERNEL);
 
     for (int i = 0; i < station; i++) {
+        struct wiphy *wiphy = vwifi_cfg80211_add();
+        if (!wiphy)
+            goto cfg80211_add;
+        if (!vwifi_interface_add(wiphy, i))
+            goto interface_add;
+    }
+
+    for (int i = 0; i < ap; ++i) {
         struct wiphy *wiphy = vwifi_cfg80211_add();
         if (!wiphy)
             goto cfg80211_add;
