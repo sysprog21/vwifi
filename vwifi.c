@@ -1435,9 +1435,8 @@ static int vwifi_get_station(struct wiphy *wiphy,
      * MCS table, Data Rate Formula :
      * https://semfionetworks.com/blog/mcs-table-updated-with-80211ax-data-rates/
      * IEEE 802.11n : https://zh.wikipedia.org/zh-tw/IEEE_802.11n
-     */
-    
-    /* Check vif->manual_mcs_set to use vif->manual_mcs if set;
+     *
+     * Check vif->manual_mcs_set to use vif->manual_mcs if set;
      * Assign modulation string for manual MCS ; else auto change based
      * on signal strength
      */
@@ -1489,15 +1488,31 @@ static int vwifi_get_station(struct wiphy *wiphy,
         pr_info("vwifi: Station %pM using manual MCS %d (%s, %s)\n", mac,
                 mcs_index, modulation, coding_rate);
     } else {
-        if (sinfo->signal > -50) {
+        if (sinfo->signal > -45) {
             mcs_index = 31;
             modulation = "64-QAM";
             coding_rate = "5/6";
-        } else if (sinfo->signal > -70 && sinfo->signal <= -50) {
+        } else if (sinfo->signal > -50 && sinfo->signal <= -45) {
+            mcs_index = 30;
+            modulation = "64-QAM";
+            coding_rate = "3/4";
+        } else if (sinfo->signal > -55 && sinfo->signal <= -50) {
+            mcs_index = 29;
+            modulation = "64-QAM";
+            coding_rate = "2/3";
+        } else if (sinfo->signal > -60 && sinfo->signal <= -55) {
             mcs_index = 28;
             modulation = "16-QAM";
             coding_rate = "3/4";
-        } else if (sinfo->signal > -90 && sinfo->signal <= -70) {
+        } else if (sinfo->signal > -65 && sinfo->signal <= -60) {
+            mcs_index = 27;
+            modulation = "16-QAM";
+            coding_rate = "1/2";
+        } else if (sinfo->signal > -70 && sinfo->signal <= -65) {
+            mcs_index = 26;
+            modulation = "QPSK";
+            coding_rate = "3/4";
+        } else if (sinfo->signal > -75 && sinfo->signal <= -70) {
             mcs_index = 25;
             modulation = "QPSK";
             coding_rate = "1/2";
