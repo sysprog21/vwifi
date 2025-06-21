@@ -1979,7 +1979,11 @@ static int vwifi_delete_interface(struct vwifi_vif *vif)
 
         cancel_work_sync(&vif->ws_scan);
         cancel_work_sync(&vif->ws_scan_timeout);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 84)
+        timer_delete_sync(&vif->scan_complete);
+#else
         del_timer_sync(&vif->scan_complete);
+#endif
 
         /* If there's a pending scan, call cfg80211_scan_done to finish it. */
         if (vif->scan_request) {
@@ -1990,7 +1994,11 @@ static int vwifi_delete_interface(struct vwifi_vif *vif)
         }
 
         /* Make sure that no work is queued */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 84)
+        timer_delete_sync(&vif->scan_timeout);
+#else
         del_timer_sync(&vif->scan_timeout);
+#endif
         cancel_work_sync(&vif->ws_connect);
         cancel_work_sync(&vif->ws_disconnect);
 
