@@ -200,6 +200,8 @@ struct vwifi_vif {
 
     /* Transmit power */
     s32 tx_power;
+
+    struct cfg80211_bitrate_mask bitrate_mask;
 };
 
 static int station = 2;
@@ -213,6 +215,27 @@ static struct vwifi_context *vwifi = NULL;
 #define MAX_DENYLIST_SIZE 1024
 
 static struct sock *nl_sk = NULL;
+
+struct ht_mcs_entry {
+    int mcs_index;
+    int bitrate_20mhz_gi08;  // in kbps
+    int bitrate_20mhz_gi04;  // in kbps
+};
+
+static const struct ht_mcs_entry ht_mcs_table[32] = {
+    {0, 6500, 7200},      {1, 13000, 14400},    {2, 19500, 21700},
+    {3, 26000, 28900},    {4, 39000, 43300},    {5, 52000, 57800},
+    {6, 58500, 65000},    {7, 65000, 72200},    {8, 13000, 14400},
+    {9, 26000, 28900},    {10, 39000, 43300},   {11, 52000, 57800},
+    {12, 78000, 86700},   {13, 104000, 115600}, {14, 117000, 130000},
+    {15, 130000, 144400}, {16, 19500, 21700},   {17, 39000, 43300},
+    {18, 58500, 65000},   {19, 78000, 86700},   {20, 117000, 130000},
+    {21, 156000, 173300}, {22, 175500, 195000}, {23, 195000, 216700},
+    {24, 26000, 28900},   {25, 52000, 57800},   {26, 78000, 86700},
+    {27, 104000, 115600}, {28, 156000, 173300}, {29, 208000, 231100},
+    {30, 234000, 260000}, {31, 260000, 288900},
+};
+
 
 static int denylist_check(char *dest, char *source)
 {
@@ -700,6 +723,20 @@ static int vwifi_ndo_stop(struct net_device *dev)
     }
     netif_stop_queue(dev);
     return 0;
+}
+
+static inline int get_ht_bitrate_kbps(const struct vwifi_vif *vif,
+                                      int mcs_index)
+{
+    enum nl80211_txrate_gi gi = vif->bitrate_mask.control[NL80211_BAND_2GHZ].gi;
+
+    if (mcs_index < 0 || mcs_index >= 32)
+        return 0;  // fallback for invalid index
+
+    if (gi == NL80211_TXRATE_FORCE_SGI)
+        return ht_mcs_table[mcs_index].bitrate_20mhz_gi04;
+    else
+        return ht_mcs_table[mcs_index].bitrate_20mhz_gi08;
 }
 
 static struct net_device_stats *vwifi_ndo_get_stats(struct net_device *dev)
