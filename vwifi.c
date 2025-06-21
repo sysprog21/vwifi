@@ -2064,6 +2064,9 @@ static int vwifi_set_tx_power(struct wiphy *wiphy,
 /* Get transmit power from the virtual interface */
 static int vwifi_get_tx_power(struct wiphy *wiphy,
                               struct wireless_dev *wdev,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+                              unsigned int link_id,
+#endif
                               int *dbm)
 {
     struct vwifi_vif *vif = wdev_get_vwifi_vif(wdev);
