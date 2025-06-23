@@ -5,6 +5,14 @@ source $ROOT/scripts/common.sh
 
 final_ret=0
 
+# Added logging setup from test_vwifi_bitrates
+LOG_DIR="/var/log/vwifi"
+LOG_FILE="$LOG_DIR/vwifi_test.log"
+mkdir -p "$LOG_DIR"
+chmod 777 "$LOG_DIR"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "vwifi Verification and Bitrate Test Log - $(date)" >> "$LOG_FILE"
+
 probe_kmod cfg80211
 if [ $? -ne 0 ]; then
     final_ret=1
@@ -40,7 +48,7 @@ if [ $final_ret -eq 0 ]; then
     vw3_phy=$(get_wiphy_name vw3)
     vw4_phy=$(get_wiphy_name vw4)
     vw5_phy=$(get_wiphy_name vw5)
-
+    
     # create network namespaces for each phy (interface)
     sudo ip netns add ns0
     sudo ip netns add ns1
@@ -160,6 +168,86 @@ if [ $final_ret -eq 0 ]; then
         final_ret=7
     fi
 
+    # Bitrate testing from test_vwifi_bitrates
+    echo "Testing MCS 0-31 with lgi-2.4 and sgi-2.4 on vw1" >> "$LOG_FILE"
+    # Expected bitrates (Mbps) for MCS 0-31 for lgi-2.4 and sgi-2.4
+    EXPECTED_BITRATES_LGI=(
+        6.5 13.0 19.5 26.0 39.0 52.0 58.5 65.0  # MCS 0-7
+        13.0 26.0 39.0 52.0 78.0 104.0 117.0 130.0  # MCS 8-15
+        19.5 39.0 58.5 78.0 117.0 156.0 175.5 195.0  # MCS 16-23
+        26.0 52.0 78.0 104.0 156.0 208.0 234.0 260.0  # MCS 24-31
+    )
+    EXPECTED_BITRATES_SGI=(
+        7.2 14.4 21.7 28.9 43.3 57.8 65.0 72.2  # MCS 0-7
+        14.4 28.9 43.3 57.8 86.7 115.6 130.0 144.4  # MCS 8-15
+        21.7 43.3 65.0 86.7 130.0 173.3 195.0 216.7  # MCS 16-23
+        28.9 57.8 86.7 115.6 173.3 231.1 260.0 288.9  # MCS 24-31
+    )
+
+    # Function to test bitrate for a single MCS and GI
+    test_bitrate() {
+        local mcs=$1
+        local gi=$2
+        local expected_bitrate=$3
+        local max_retries=3
+        local retry=0
+        local success=false
+
+        echo "----------------------------------------"
+        echo "Testing MCS $mcs with $gi on vw1"
+
+        # Set GI string for logging
+        if [ "$gi" = "sgi-2.4" ]; then
+            echo "Set GI to short (0.4 µs)"
+        else
+            echo "Set GI to long (0.8 µs)"
+        fi
+
+        while [ $retry -lt $max_retries ]; do
+            # Set bitrate
+            sudo ip netns exec ns1 iw dev vw1 set bitrates ht-mcs-2.4 $mcs $gi
+            sleep 1  # Ensure bitrate applies
+
+            # Check connection
+            output=$(sudo ip netns exec ns1 iw dev vw1 link)
+            if echo "$output" | grep -q "Connected to"; then
+                echo "$output"
+                # Extract bitrate
+                rx_bitrate=$(echo "$output" | grep "rx bitrate" | awk '{print $3}')
+                rx_mcs=$(echo "$output" | grep "rx bitrate" | grep -o "MCS [0-9]\+")
+                tx_bitrate=$(echo "$output" | grep "tx bitrate" | awk '{print $3}')
+                tx_mcs=$(echo "$output" | grep "tx bitrate" | grep -o "MCS [0-9]\+")
+                if [ "$rx_bitrate" = "$tx_bitrate" ] && [ "$rx_mcs" = "MCS $mcs" ] && [ "$tx_mcs" = "MCS $mcs" ] && [ "$rx_bitrate" = "$expected_bitrate" ]; then
+                    echo "Success: MCS $mcs $gi bitrate $rx_bitrate Mbps matches expected $expected_bitrate Mbps"
+                    success=true
+                    break
+                fi
+            fi
+            retry=$((retry + 1))
+            sleep 2  # Increase retry delay for stability
+        done
+
+        if [ "$success" = false ]; then
+            echo "Failed: MCS $mcs $gi did not connect or bitrate mismatch after $max_retries retries"
+            final_ret=12  #  New error code for bitrate test failure
+        fi
+        echo "----------------------------------------"
+    }
+
+    # Test MCS 0-31 for lgi-2.4
+    for mcs in {0..31}; do
+        test_bitrate $mcs "lgi-2.4" "${EXPECTED_BITRATES_LGI[$mcs]}"
+    done
+
+    # Test MCS 0-31 for sgi-2.4
+    for mcs in {0..31}; do
+        test_bitrate $mcs "sgi-2.4" "${EXPECTED_BITRATES_SGI[$mcs]}"
+    done
+
+    # Reset bitrate to default
+    sudo ip netns exec ns1 iw dev vw1 set bitrates ht-mcs-2.4 0 lgi-2.4
+    echo "Bitrate reset to default MCS 0 lgi-2.4"
+
     # vw3 becomes an IBSS and then joins the "ibss1" network.
     echo
     echo "=============="
@@ -202,7 +290,7 @@ if [ $final_ret -eq 0 ]; then
     echo "================================================================================"
     sudo ip netns exec ns3 ping -c 1 10.0.0.6
 
-    # ping test: IBSS vw3 <--> IBSS vw4, should succeed
+    # ping test: IBSS vw3 <--> IBSS vw4, should success
     echo
     echo "================================================================================"
     echo "Ping Test: IBSS vw3 (10.0.0.4) (in ibss1) <--> IBSS vw4 (10.0.0.5) (in ibss1)"
