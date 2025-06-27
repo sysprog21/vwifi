@@ -48,7 +48,7 @@ if [ $final_ret -eq 0 ]; then
     vw3_phy=$(get_wiphy_name vw3)
     vw4_phy=$(get_wiphy_name vw4)
     vw5_phy=$(get_wiphy_name vw5)
-    
+
     # create network namespaces for each phy (interface)
     sudo ip netns add ns0
     sudo ip netns add ns1
@@ -290,7 +290,7 @@ if [ $final_ret -eq 0 ]; then
     echo "================================================================================"
     sudo ip netns exec ns3 ping -c 1 10.0.0.6
 
-    # ping test: IBSS vw3 <--> IBSS vw4, should success
+    # ping test: IBSS vw3 <--> IBSS vw4, should succeed
     echo
     echo "================================================================================"
     echo "Ping Test: IBSS vw3 (10.0.0.4) (in ibss1) <--> IBSS vw4 (10.0.0.5) (in ibss1)"

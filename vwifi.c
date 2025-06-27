@@ -2397,7 +2397,9 @@ static int vwifi_leave_ibss(struct wiphy *wiphy, struct net_device *ndev)
  */
 static int vwifi_set_bitrate_mask(struct wiphy *wiphy,
                                   struct net_device *dev,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2)
                                   unsigned int link_id,
+#endif
                                   const u8 *peer,
                                   const struct cfg80211_bitrate_mask *mask)
 {
@@ -2414,8 +2416,13 @@ static int vwifi_set_bitrate_mask(struct wiphy *wiphy,
         return -EINVAL;
     }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2)
     pr_info("vwifi: set_bitrate_mask called for dev %s, link_id %u, peer %pM\n",
             dev->name, link_id, peer ? peer : vif->bssid);
+#else
+    pr_info("vwifi: set_bitrate_mask called for dev %s, peer %pM\n", dev->name,
+            peer ? peer : vif->bssid);
+#endif
     pr_info("vwifi: 2.4GHz MCS mask: %02x %02x %02x %02x\n",
             mask->control[NL80211_BAND_2GHZ].ht_mcs[0],
             mask->control[NL80211_BAND_2GHZ].ht_mcs[1],
