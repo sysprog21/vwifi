@@ -3341,9 +3341,7 @@ static struct virtio_driver virtio_vwifi = {
     .feature_table = features,
     .feature_table_size = ARRAY_SIZE(features),
     .driver.name = KBUILD_MODNAME,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)
     .driver.owner = THIS_MODULE,
-#endif
     .id_table = id_table,
     .probe = vwifi_virtio_probe,
     .remove = vwifi_virtio_remove,
