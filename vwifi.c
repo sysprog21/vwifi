@@ -88,6 +88,9 @@ struct vwifi_vif {
     struct wireless_dev wdev;
     struct net_device *ndev;
     struct net_device_stats stats;
+    bool manual_mcs_set;
+    int manual_mcs; /* Stores the highest enabled MCS index for configuration */
+    struct cfg80211_bitrate_mask bitrate_mask;
 
     size_t ssid_len;
     /* Currently connected BSS id */
@@ -1403,37 +1406,262 @@ static int vwifi_get_station(struct wiphy *wiphy,
     sinfo->tx_failed = vif->stats.tx_dropped;
     sinfo->tx_bytes = vif->stats.tx_bytes;
     sinfo->rx_bytes = vif->stats.rx_bytes;
+
+    /* Log byte counters for debugging */
+    pr_info("vwifi: Station %pM tx_bytes %llu, rx_bytes %llu, tx_packets %u",
+            mac, sinfo->tx_bytes, sinfo->rx_bytes, sinfo->tx_packets);
+    pr_info("rx_packets %u, tx_failed %u\n", sinfo->rx_packets,
+            sinfo->tx_failed);
+
     /* For CFG80211_SIGNAL_TYPE_MBM, value is expressed in dBm */
     sinfo->signal = rand_int_smooth(-100, -30, jiffies);
+    pr_info("vwifi: Station %pM signal %d dBm (raw)\n", mac, sinfo->signal);
     sinfo->inactive_time = jiffies_to_msecs(jiffies - vif->active_time);
+
     /*
-     * Using 802.11n (HT) as the PHY, configure as follows:
+     * Dynamic MCS Selection Algorithm Description
      *
-     * Modulation: 64-QAM
-     * Data Bandwidth: 20MHz
-     * Number of Spatial Streams: 4
+     * This implementation provides a dynamic Modulation and Coding Scheme (MCS)
+     * selection algorithm designed for the IEEE 802.11n (HT) physical layer
+     * under a 20 MHz bandwidth configuration with support for up to 4 spatial
+     * streams.
      *
-     * According to the 802.11n (HT) modulation table, we have:
+     * The algorithm supports both manual configuration and automatic selection
+     * based on signal strength (RSSI). It adapts the MCS index to balance
+     * throughput and reliability under real-time channel conditions.
      *
-     * Number of Data Subcarriers: 52
-     * Number of Coded Bits per Subcarrier per Stream: 6
-     * Coding: 5/6
-     * OFDM Symbol Duration: 3.2 µs
-     * Guard Interval Duration: 0.8 µs
-     * Thus, the data rate is 260 Mbps.
-     * MCS table, Data Rate Formula :
+     * Configuration Parameters:
+     *   - Modulation Schemes: BPSK, QPSK, 16-QAM, 64-QAM
+     *   - Coding Rates: 1/2, 2/3, 3/4, 5/6
+     *   - Spatial Streams: 1 to 4 (determined from MCS index)
+     *   - Channel Bandwidth: 20 MHz
+     *   - Guard Interval (GI): Short (0.4 μs) or Long (0.8 μs)
+     *   - OFDM Symbol Duration: 3.2 μs
+     *
+     * References:
+     *   - IEEE 802.11n MCS Table
+     *   -
      * https://semfionetworks.com/blog/mcs-table-updated-with-80211ax-data-rates/
-     * IEEE 802.11n : https://zh.wikipedia.org/zh-tw/IEEE_802.11n
+     *   - https://en.wikipedia.org/wiki/IEEE_802.11n-2009
+     *
+     * Algorithm Logic:
+     *
+     * 1. Manual MCS Mode:
+     *    - If vif->manual_mcs_set is true, the highest enabled MCS index is
+     * selected from the bitrate_mask.control[NL80211_BAND_2GHZ].ht_mcs[]
+     * bitmap.
+     *    - Modulation and coding rate are derived based on the selected MCS
+     * index.
+     *
+     * 2. Automatic MCS Mode (Signal-Based):
+     *    - If manual mode is not enabled, the MCS index is selected based on
+     * RSSI:
+     *
+     *      Signal (dBm)     MCS     Modulation     Coding Rate
+     *      > -45            31      64-QAM         5/6
+     *      -50 ~ -45        30      64-QAM         3/4
+     *      -55 ~ -50        29      64-QAM         2/3
+     *      -60 ~ -55        28      16-QAM         3/4
+     *      -65 ~ -60        27      16-QAM         1/2
+     *      -70 ~ -65        26      QPSK           3/4
+     *      -75 ~ -70        25      QPSK           1/2
+     *      ≤ -75            24      BPSK           1/2
+     *
+     * 3. Modulation and Coding Assignment:
+     *    - Each MCS index maps to a modulation and coding pair (via modulo 8
+     * pattern).
+     *
+     * 4. Spatial Stream Determination:
+     *    - MCS  0–7:    1 stream
+     *    - MCS  8–15:   2 streams
+     *    - MCS 16–23:   3 streams
+     *    - MCS 24–31:   4 streams
+     *
+     * 5. Guard Interval Selection:
+     *    - Based on bitrate_mask.control[].gi:
+     *      NL80211_TXRATE_FORCE_SGI  →  0.4 μs (short GI)
+     *      NL80211_TXRATE_FORCE_LGI  →  0.8 μs (long GI)
+     *      NL80211_TXRATE_DEFAULT_GI →  default (0.8 μs)
+     *
+     * Rate Configuration Output:
+     *   - The final parameters are applied to both TX and RX:
+     *       - sinfo->txrate / sinfo->rxrate:
+     *           - mcs_index
+     *           - spatial_streams
+     *           - modulation and coding (log only)
+     *           - guard interval (GI)
+     *          - bandwidth = 20 MHz
      */
-    sinfo->rxrate.flags |= RATE_INFO_FLAGS_MCS;
-    sinfo->rxrate.mcs = 31;
+
+    int mcs_index;
+    const char *modulation;
+    const char *coding_rate;
+    u8 spatial_streams = 1; /* Default to 1 spatial stream */
+    const char *gi_str;
+
+    /* Select MCS dynamically or use manual settings */
+    if (vif->manual_mcs_set) {
+        /* Select highest enabled MCS from bitrate_mask */
+        mcs_index = 31;
+        for (int i = 31; i >= 0; i--) {
+            if (vif->bitrate_mask.control[NL80211_BAND_2GHZ].ht_mcs[i / 8] &
+                (1 << (i % 8))) {
+                mcs_index = i;
+                break;
+            }
+        }
+    } else {
+        if (sinfo->signal > -45) {
+            mcs_index = 31;
+            modulation = "64-QAM";
+            coding_rate = "5/6";
+        } else if (sinfo->signal > -50 && sinfo->signal <= -45) {
+            mcs_index = 30;
+            modulation = "64-QAM";
+            coding_rate = "3/4";
+        } else if (sinfo->signal > -55 && sinfo->signal <= -50) {
+            mcs_index = 29;
+            modulation = "64-QAM";
+            coding_rate = "2/3";
+        } else if (sinfo->signal > -60 && sinfo->signal <= -55) {
+            mcs_index = 28;
+            modulation = "16-QAM";
+            coding_rate = "3/4";
+        } else if (sinfo->signal > -65 && sinfo->signal <= -60) {
+            mcs_index = 27;
+            modulation = "16-QAM";
+            coding_rate = "1/2";
+        } else if (sinfo->signal > -70 && sinfo->signal <= -65) {
+            mcs_index = 26;
+            modulation = "QPSK";
+            coding_rate = "3/4";
+        } else if (sinfo->signal > -75 && sinfo->signal <= -70) {
+            mcs_index = 25;
+            modulation = "QPSK";
+            coding_rate = "1/2";
+        } else {
+            mcs_index = 24;
+            modulation = "BPSK";
+            coding_rate = "1/2";
+        }
+    }
+
+    /* Determine spatial streams from MCS index */
+    if (mcs_index >= 0 && mcs_index <= 7) {
+        spatial_streams = 1;
+    } else if (mcs_index <= 15) {
+        spatial_streams = 2;
+    } else if (mcs_index <= 23) {
+        spatial_streams = 3;
+    } else if (mcs_index <= 31) {
+        spatial_streams = 4;
+    } else {
+        spatial_streams = 1; /* Fallback for invalid MCS */
+    }
+
+    /* Assign modulation and coding rate based on MCS */
+    switch (mcs_index) {
+    case 0:
+    case 8:
+    case 16:
+    case 24:
+        modulation = "BPSK";
+        coding_rate = "1/2";
+        break;
+    case 1:
+    case 9:
+    case 17:
+    case 25:
+        modulation = "QPSK";
+        coding_rate = "1/2";
+        break;
+    case 2:
+    case 10:
+    case 18:
+    case 26:
+        modulation = "QPSK";
+        coding_rate = "3/4";
+        break;
+    case 3:
+    case 11:
+    case 19:
+    case 27:
+        modulation = "16-QAM";
+        coding_rate = "1/2";
+        break;
+    case 4:
+    case 12:
+    case 20:
+    case 28:
+        modulation = "16-QAM";
+        coding_rate = "3/4";
+        break;
+    case 5:
+    case 13:
+    case 21:
+    case 29:
+        modulation = "64-QAM";
+        coding_rate = "2/3";
+        break;
+    case 6:
+    case 14:
+    case 22:
+    case 30:
+        modulation = "64-QAM";
+        coding_rate = "3/4";
+        break;
+    case 7:
+    case 15:
+    case 23:
+    case 31:
+        modulation = "64-QAM";
+        coding_rate = "5/6";
+        break;
+    default:
+        mcs_index = 0;
+        modulation = "BPSK";
+        coding_rate = "1/2";
+        break;
+    }
+
+    switch (vif->bitrate_mask.control[NL80211_BAND_2GHZ].gi) {
+    case NL80211_TXRATE_FORCE_SGI:
+        gi_str = "short (0.4µs)";
+        break;
+    case NL80211_TXRATE_FORCE_LGI:
+        gi_str = "long (0.8µs)";
+        break;
+    case NL80211_TXRATE_DEFAULT_GI:
+    default:
+        gi_str = "default (0.8µs)";
+        break;
+    }
+
+    pr_info("vwifi: Station %pM , MCS %d (%s, %s), GI %s, SS %d\n", mac,
+            mcs_index, modulation, coding_rate, gi_str, spatial_streams);
+
+    /* Configure RX and TX rates */
+    sinfo->rxrate.flags = RATE_INFO_FLAGS_MCS;
+    if (vif->bitrate_mask.control[NL80211_BAND_2GHZ].gi ==
+        NL80211_TXRATE_FORCE_SGI)
+        sinfo->rxrate.flags |= RATE_INFO_FLAGS_SHORT_GI;
+    sinfo->rxrate.mcs = mcs_index;
     sinfo->rxrate.bw = RATE_INFO_BW_20;
     sinfo->rxrate.n_bonded_ch = 1;
+    sinfo->rxrate.nss = spatial_streams;
 
-    sinfo->txrate.flags |= RATE_INFO_FLAGS_MCS;
-    sinfo->txrate.mcs = 31;
+    sinfo->txrate.flags = RATE_INFO_FLAGS_MCS;
+    if (vif->bitrate_mask.control[NL80211_BAND_2GHZ].gi ==
+        NL80211_TXRATE_FORCE_SGI)
+        sinfo->txrate.flags |= RATE_INFO_FLAGS_SHORT_GI;
+    sinfo->txrate.mcs = mcs_index;
     sinfo->txrate.bw = RATE_INFO_BW_20;
     sinfo->txrate.n_bonded_ch = 1;
+    sinfo->txrate.nss = spatial_streams;
+
+    /* Log rate configuration for verification */
+    pr_info("vwifi: Station %pM txrate MCS %d, rxrate MCS %d, SS %d\n", mac,
+            sinfo->txrate.mcs, sinfo->rxrate.mcs, spatial_streams);
     return 0;
 }
 
@@ -1446,9 +1674,13 @@ static int vwifi_dump_station(struct wiphy *wiphy,
 {
     struct vwifi_vif *ap_vif = ndev_get_vwifi_vif(dev);
 
+    if (!ap_vif) {
+        pr_err("vwifi: Failed to get ap_vif for dev %s\n", dev->name);
+        return -EINVAL;
+    }
+
     pr_info("Dump station at the idx %d\n", idx);
 
-    int ret = -ENONET;
     struct vwifi_vif *sta_vif = NULL;
     int i = 0;
 
@@ -1460,10 +1692,9 @@ static int vwifi_dump_station(struct wiphy *wiphy,
         break;
     }
 
-    if (sta_vif == ap_vif)
-        return ret;
-
-    ret = 0;
+    if (!sta_vif) {
+        return -ENONET;
+    }
 
     memcpy(mac, sta_vif->ndev->dev_addr, ETH_ALEN);
     return vwifi_get_station(wiphy, dev, mac, sinfo);
@@ -2162,6 +2393,99 @@ static int vwifi_leave_ibss(struct wiphy *wiphy, struct net_device *ndev)
     return 0;
 }
 
+/* Callback to handle manual MCS and GI of related bitrate configuration via iw
+ */
+static int vwifi_set_bitrate_mask(struct wiphy *wiphy,
+                                  struct net_device *dev,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2)
+                                  unsigned int link_id,
+#endif
+                                  const u8 *peer,
+                                  const struct cfg80211_bitrate_mask *mask)
+{
+    struct vwifi_vif *vif = netdev_priv(dev);
+    int i;
+    const char *gi_str;
+
+    /* Initialization of MCS state to ensure safe defaults */
+    vif->manual_mcs = -1;
+    vif->manual_mcs_set = false;
+
+    if (!vif) {
+        pr_err("vwifi: Failed to get vwifi_vif for dev %s\n", dev->name);
+        return -EINVAL;
+    }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 2)
+    pr_info("vwifi: set_bitrate_mask called for dev %s, link_id %u, peer %pM\n",
+            dev->name, link_id, peer ? peer : vif->bssid);
+#else
+    pr_info("vwifi: set_bitrate_mask called for dev %s, peer %pM\n", dev->name,
+            peer ? peer : vif->bssid);
+#endif
+    pr_info("vwifi: 2.4GHz MCS mask: %02x %02x %02x %02x\n",
+            mask->control[NL80211_BAND_2GHZ].ht_mcs[0],
+            mask->control[NL80211_BAND_2GHZ].ht_mcs[1],
+            mask->control[NL80211_BAND_2GHZ].ht_mcs[2],
+            mask->control[NL80211_BAND_2GHZ].ht_mcs[3]);
+
+    memset(vif->bitrate_mask.control[NL80211_BAND_2GHZ].ht_mcs, 0,
+           IEEE80211_HT_MCS_MASK_LEN);
+
+    for (i = 0; i < IEEE80211_HT_MCS_MASK_LEN; i++)
+        vif->bitrate_mask.control[NL80211_BAND_2GHZ].ht_mcs[i] =
+            mask->control[NL80211_BAND_2GHZ].ht_mcs[i];
+
+    vif->bitrate_mask.control[NL80211_BAND_2GHZ].gi =
+        mask->control[NL80211_BAND_2GHZ].gi;
+
+    /* Set GI based on mask->control[NL80211_BAND_2GHZ].gi and GI string for
+     * logging
+     */
+    switch (vif->bitrate_mask.control[NL80211_BAND_2GHZ].gi) {
+    case NL80211_TXRATE_FORCE_SGI:
+        gi_str = "short (0.4µs)";
+        break;
+    case NL80211_TXRATE_FORCE_LGI:
+        gi_str = "long (0.8µs)";
+        break;
+    case NL80211_TXRATE_DEFAULT_GI:
+    default:
+        gi_str = "default (0.8µs)";
+        break;
+    }
+    pr_info("vwifi: Set GI to %s\n", gi_str);
+
+    /* Added loop to log all enabled MCS indices */
+    for (i = 0; i < 32; i++) {
+        if (vif->bitrate_mask.control[NL80211_BAND_2GHZ].ht_mcs[i / 8] &
+            (1 << (i % 8))) {
+            pr_info("vwifi: Enabled MCS %d\n", i);
+            vif->manual_mcs_set = true;
+        }
+    }
+
+    /* Replaced forward iteration with backward iteration to select highest MCS
+     */
+    /* Set vif->manual_mcs to highest enabled MCS */
+    for (i = 31; i >= 0; i--) {
+        if (vif->bitrate_mask.control[NL80211_BAND_2GHZ].ht_mcs[i / 8] &
+            (1 << (i % 8))) {
+            vif->manual_mcs = i;
+            pr_info("vwifi: Selected highest MCS %d for configuration\n", i);
+            break;
+        }
+    }
+
+    /* fallback to MCS 0 if no MCS is enabled */
+    if (!vif->manual_mcs_set) {
+        pr_info("vwifi: No MCS enabled, defaulting to MCS 0\n");
+        vif->manual_mcs = 0;
+    }
+
+    return 0;
+}
+
 /* Structure of functions for FullMAC 80211 drivers. Functions implemented
  * along with fields/flags in the wiphy structure represent driver features.
  * This module can only perform "scan" and "connect". Some functions cannot
@@ -2186,6 +2510,7 @@ static struct cfg80211_ops vwifi_cfg_ops = {
     .get_tx_power = vwifi_get_tx_power,
     .join_ibss = vwifi_join_ibss,
     .leave_ibss = vwifi_leave_ibss,
+    .set_bitrate_mask = vwifi_set_bitrate_mask,
 };
 
 /* Macro for defining 2GHZ channel array */
@@ -2206,6 +2531,13 @@ static struct cfg80211_ops vwifi_cfg_ops = {
 #define RATE_ENT(_rate, _hw_value)                   \
     {                                                \
         .bitrate = (_rate), .hw_value = (_hw_value), \
+    }
+
+/* Macro for HT MCS rate table */
+#define HT_MCS_RATE(_mcs, _ss, lgi, sgi)                                    \
+    {                                                                       \
+        .mcs_index = (_mcs), .spatial_streams = (_ss), .rate_800ns = (lgi), \
+        .rate_400ns = (sgi),                                                \
     }
 
 /* Array of "supported" channels in 2GHz band. It is required for wiphy. */
@@ -2239,9 +2571,55 @@ static const struct ieee80211_rate vwifi_supported_rates[] = {
     RATE_ENT(360, 0x200), RATE_ENT(480, 0x400), RATE_ENT(540, 0x800),
 };
 
-/* Describes supported band of 2GHz. */
-static struct ieee80211_supported_band nf_band_2ghz;
+struct ht_mcs_rate {
+    u8 mcs_index;
+    u8 spatial_streams;
+    float rate_800ns; /* Mbps */
+    float rate_400ns; /* Mbps */
+};
 
+/* HT MCS table for 20 MHz, 1–4 spatial streams, 0.8 µs and 0.4 µs GI */
+static const struct ht_mcs_rate ht_mcs_table[] = {
+    HT_MCS_RATE(0, 1, 6.5, 7.2),      HT_MCS_RATE(1, 1, 13.0, 14.4),
+    HT_MCS_RATE(2, 1, 19.5, 21.7),    HT_MCS_RATE(3, 1, 26.0, 28.9),
+    HT_MCS_RATE(4, 1, 39.0, 43.3),    HT_MCS_RATE(5, 1, 52.0, 57.8),
+    HT_MCS_RATE(6, 1, 58.5, 65.0),    HT_MCS_RATE(7, 1, 65.0, 72.2),
+    HT_MCS_RATE(8, 2, 13.0, 14.4),    HT_MCS_RATE(9, 2, 26.0, 28.9),
+    HT_MCS_RATE(10, 2, 39.0, 43.3),   HT_MCS_RATE(11, 2, 52.0, 57.8),
+    HT_MCS_RATE(12, 2, 78.0, 86.7),   HT_MCS_RATE(13, 2, 104.0, 115.6),
+    HT_MCS_RATE(14, 2, 117.0, 130.0), HT_MCS_RATE(15, 2, 130.0, 144.4),
+    HT_MCS_RATE(16, 3, 19.5, 21.7),   HT_MCS_RATE(17, 3, 39.0, 43.3),
+    HT_MCS_RATE(18, 3, 58.5, 65.0),   HT_MCS_RATE(19, 3, 78.0, 86.7),
+    HT_MCS_RATE(20, 3, 117.0, 130.0), HT_MCS_RATE(21, 3, 156.0, 173.3),
+    HT_MCS_RATE(22, 3, 175.5, 195.0), HT_MCS_RATE(23, 3, 195.0, 216.7),
+    HT_MCS_RATE(24, 4, 26.0, 28.9),   HT_MCS_RATE(25, 4, 52.0, 57.8),
+    HT_MCS_RATE(26, 4, 78.0, 86.7),   HT_MCS_RATE(27, 4, 104.0, 115.6),
+    HT_MCS_RATE(28, 4, 156.0, 173.3), HT_MCS_RATE(29, 4, 208.0, 231.1),
+    HT_MCS_RATE(30, 4, 234.0, 260.0), HT_MCS_RATE(31, 4, 260.0, 288.9),
+};
+
+static struct ieee80211_supported_band nf_band_2ghz = {
+    .band = NL80211_BAND_2GHZ,
+    .channels = (struct ieee80211_channel *) vwifi_supported_channels_2ghz,
+    .n_channels = ARRAY_SIZE(vwifi_supported_channels_2ghz),
+    .bitrates = (struct ieee80211_rate *) vwifi_supported_rates,
+    .n_bitrates = ARRAY_SIZE(vwifi_supported_rates),
+    .ht_cap =
+        {
+            .ht_supported = true,
+            .cap = IEEE80211_HT_CAP_SGI_20 | IEEE80211_HT_CAP_GRN_FLD |
+                   IEEE80211_HT_CAP_MAX_AMSDU |
+                   IEEE80211_HT_CAP_SUP_WIDTH_20_40,
+            .mcs =
+                {
+                    .rx_mask = {0xff, 0xff, 0xff, 0xff}, /* MCS 0-31 */
+                    .rx_highest = cpu_to_le16(300),
+                    .tx_params = IEEE80211_HT_MCS_TX_DEFINED,
+                },
+            .ampdu_factor = IEEE80211_HT_MAX_AMPDU_64K,
+            .ampdu_density = IEEE80211_HT_MPDU_DENSITY_16,
+        },
+};
 /* Describes supported band of 5GHz. */
 static struct ieee80211_supported_band nf_band_5ghz;
 
