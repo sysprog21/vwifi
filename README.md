@@ -766,7 +766,7 @@ $ sudo qemu-system-x86_64 -kernel bzImage \
 You need to run the command above three times, please ensure the `buildroot` rootfs image, `tap` device and MAC address in every VM must be different. Also, ensure that the `mrg_rxbuf=off` has been specified.
 
 ### Needed Steps in Every VM
-#### Raondom Number Generator
+#### Random Number Generator
 `hostapd` and `wpa_supplicant` need the random number generator `/dev/random` for generating the random number used in a 4-way handshake. However, for some reason (which may be related to IRQ), accessing `/dev/random` may be not available or even not possible. And we found that `/dev/urandom` is always available, so we use a soft link to let the  `/dev/random` link to `/dev/urandom`:
 ```shell
 mv /dev/random /dev/random.orig
