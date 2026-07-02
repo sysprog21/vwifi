@@ -1126,7 +1126,7 @@ static void vwifi_connect_routine(struct work_struct *w)
                 return;
 
             /* AP connection part */
-            sinfo = kmalloc(sizeof(struct station_info), GFP_KERNEL);
+            sinfo = kzalloc(sizeof(struct station_info), GFP_KERNEL);
             if (!sinfo)
                 return;
 
@@ -2843,7 +2843,7 @@ static void vwifi_virtio_mgmt_rx_connect_request(
         if (ether_addr_equal(sta_ent->mac, src))
             return;
 
-    sinfo = kmalloc(sizeof(struct station_info), GFP_KERNEL);
+    sinfo = kzalloc(sizeof(struct station_info), GFP_KERNEL);
     if (!sinfo)
         return;
 
