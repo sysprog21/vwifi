@@ -1387,15 +1387,23 @@ static int vwifi_get_station(struct wiphy *wiphy,
         sinfo->connected_time =
             jiffies_to_msecs(jiffies - vif->conn_time) / 1000;
 
-        if (mutex_lock_interruptible(&vif->ap->lock))
-            return -ENONET;
+         /* bss_param describes the *AP's* BSS (beacon interval, DTIM,
+        * short preamble). These are read from the local AP object via
+        * vif->ap. In non-virtio mode the AP is another vwifi_vif in the
+        * same kernel, so vif->ap is valid. In virtio mode the AP lives in
+        * a different VM, so vif->ap is legitimately NULL and we skip the
+        * whole group — we simply don't have these values locally.
+        */
+        if(vif->ap){
+            if (mutex_lock_interruptible(&vif->ap->lock))
+                return -ENONET;
 
-        sinfo->bss_param.beacon_interval =
-            cpu_to_le16(vif->ap->beacon_int / 1024);
-        sinfo->bss_param.dtim_period = 1;
+            sinfo->bss_param.beacon_interval = cpu_to_le16(vif->ap->beacon_int / 1024);
+            sinfo->bss_param.dtim_period = 1;
 
-        mutex_unlock(&vif->ap->lock);
-        sinfo->bss_param.flags |= BSS_PARAM_FLAGS_SHORT_PREAMBLE;
+            mutex_unlock(&vif->ap->lock);
+            sinfo->bss_param.flags |= BSS_PARAM_FLAGS_SHORT_PREAMBLE;
+        }
     }
 
     sinfo->tx_packets = vif->stats.tx_packets;
