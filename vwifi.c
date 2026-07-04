@@ -3143,6 +3143,7 @@ static netdev_tx_t vwifi_virtio_tx(struct vwifi_vif *vif, struct sk_buff *skb)
     struct virtio_net_hdr_mrg_rxbuf *hdr =
         (struct virtio_net_hdr_mrg_rxbuf *) skb->cb;
     struct scatterlist sg[2];
+    unsigned int pkt_len = skb->len;
     int err;
     unsigned long flags;
 
@@ -3168,11 +3169,14 @@ static netdev_tx_t vwifi_virtio_tx(struct vwifi_vif *vif, struct sk_buff *skb)
         pr_info("%s: virtqueue_kick fail\n", __func__);
         goto out_free;
     }
+    vif->stats.tx_packets++;
+    vif->stats.tx_bytes += pkt_len;
 
     spin_unlock_irqrestore(&vwifi_virtio_lock, flags);
     return NETDEV_TX_OK;
 
 out_free:
+    vif->stats.tx_dropped++; 
     spin_unlock_irqrestore(&vwifi_virtio_lock, flags);
     dev_kfree_skb(skb);
     return err;
