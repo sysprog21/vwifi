@@ -260,8 +260,7 @@ static void denylist_load(char *dlist, size_t dlist_len)
         pr_info("vwifi->denylist have to be kmalloc first\n");
         return;
     }
-    dlist_len = strnlen(dlist, min_t(size_t, dlist_len,
-                                    MAX_DENYLIST_SIZE - 1));
+    dlist_len = strnlen(dlist, min_t(size_t, dlist_len, MAX_DENYLIST_SIZE - 1));
     memset(vwifi->denylist, '\0', MAX_DENYLIST_SIZE); /* clear the denylist */
     memcpy(vwifi->denylist, dlist, dlist_len);
 }
@@ -1113,8 +1112,10 @@ static void vwifi_scan_routine(struct work_struct *w)
 
 static void vwifi_virtio_connect_request(struct vwifi_vif *vif);
 
-static void vwifi_cfg80211_new_sta(struct vwifi_vif *vif, const u8 *mac,
-                                   struct station_info *sinfo, gfp_t gfp)
+static void vwifi_cfg80211_new_sta(struct vwifi_vif *vif,
+                                   const u8 *mac,
+                                   struct station_info *sinfo,
+                                   gfp_t gfp)
 {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
     cfg80211_new_sta(&vif->wdev, mac, sinfo, gfp);
@@ -1123,7 +1124,8 @@ static void vwifi_cfg80211_new_sta(struct vwifi_vif *vif, const u8 *mac,
 #endif
 }
 
-static void vwifi_cfg80211_del_sta(struct vwifi_vif *vif, const u8 *mac,
+static void vwifi_cfg80211_del_sta(struct vwifi_vif *vif,
+                                   const u8 *mac,
                                    gfp_t gfp)
 {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
@@ -1182,8 +1184,7 @@ static void vwifi_connect_routine(struct work_struct *w)
              * command NL80211_CMD_NEW_STATION for latter processing
              * (e.g. 4-way handshake).
              */
-            vwifi_cfg80211_new_sta(ap, vif->ndev->dev_addr, sinfo,
-                                   GFP_KERNEL);
+            vwifi_cfg80211_new_sta(ap, vif->ndev->dev_addr, sinfo, GFP_KERNEL);
 
             mutex_unlock(&ap->lock);
 
@@ -2239,23 +2240,26 @@ static struct cfg80211_ops vwifi_cfg_ops = {
 #undef VWIFI_CFG80211_DEV
 
 /* Macro for defining 2GHZ channel array */
-#define CHAN_2GHZ(channel, freq)                          \
-    {                                                     \
-        .band = NL80211_BAND_2GHZ, .hw_value = (channel), \
-        .center_freq = (freq),                            \
+#define CHAN_2GHZ(channel, freq)   \
+    {                              \
+        .band = NL80211_BAND_2GHZ, \
+        .hw_value = (channel),     \
+        .center_freq = (freq),     \
     }
 
 /* Macro for defining 5GHZ channel array */
-#define CHAN_5GHZ(channel)                                \
-    {                                                     \
-        .band = NL80211_BAND_5GHZ, .hw_value = (channel), \
-        .center_freq = 5000 + (5 * (channel)),            \
+#define CHAN_5GHZ(channel)                     \
+    {                                          \
+        .band = NL80211_BAND_5GHZ,             \
+        .hw_value = (channel),                 \
+        .center_freq = 5000 + (5 * (channel)), \
     }
 
 /* Macro for defining rate table */
-#define RATE_ENT(_rate, _hw_value)                   \
-    {                                                \
-        .bitrate = (_rate), .hw_value = (_hw_value), \
+#define RATE_ENT(_rate, _hw_value) \
+    {                              \
+        .bitrate = (_rate),        \
+        .hw_value = (_hw_value),   \
     }
 
 /* Array of "supported" channels in 2GHz band. It is required for wiphy. */
