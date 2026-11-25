@@ -216,14 +216,21 @@ static struct sock *nl_sk = NULL;
 
 static int denylist_check(char *dest, char *source)
 {
+    size_t denylist_len;
+    char *user_input, *input;
+
     if (!vwifi->denylist || !*(vwifi->denylist))
         return 0;
 
-    char *user_input =
-        kmalloc(sizeof(char) * (strlen(vwifi->denylist) + 1), GFP_KERNEL);
-    strncpy(user_input, vwifi->denylist, strlen(vwifi->denylist));
+    denylist_len = strnlen(vwifi->denylist, MAX_DENYLIST_SIZE);
+    user_input = kmalloc(denylist_len + 1, GFP_KERNEL);
+    if (!user_input)
+        return 0;
+    memcpy(user_input, vwifi->denylist, denylist_len);
+    user_input[denylist_len] = '\0';
 
-    char *token = strsep(&user_input, "\n");
+    input = user_input;
+    char *token = strsep(&input, "\n");
     while (token) {
         char *denylist_dest = strsep(&token, " ");
         strsep(&token, " ");
@@ -232,21 +239,23 @@ static int denylist_check(char *dest, char *source)
             kfree(user_input);
             return 1;
         }
-        token = strsep(&user_input, "\n");
+        token = strsep(&input, "\n");
     }
     kfree(user_input);
 
     return 0;
 }
 
-static void denylist_load(char *dlist)
+static void denylist_load(char *dlist, size_t dlist_len)
 {
     if (!vwifi->denylist) {
         pr_info("vwifi->denylist have to be kmalloc first\n");
         return;
     }
+    dlist_len = strnlen(dlist, min_t(size_t, dlist_len,
+                                    MAX_DENYLIST_SIZE - 1));
     memset(vwifi->denylist, '\0', MAX_DENYLIST_SIZE); /* clear the denylist */
-    strncpy(vwifi->denylist, dlist, strlen(dlist));
+    memcpy(vwifi->denylist, dlist, dlist_len);
 }
 
 static void denylist_nl_recv(struct sk_buff *skb)
@@ -259,7 +268,7 @@ static void denylist_nl_recv(struct sk_buff *skb)
 
     nlh = (struct nlmsghdr *) skb->data;
 
-    denylist_load((char *) nlmsg_data(nlh));
+    denylist_load((char *) nlmsg_data(nlh), nlmsg_len(nlh));
 
     /* pid of sending process */
     pid = nlh->nlmsg_pid;
@@ -272,7 +281,7 @@ static void denylist_nl_recv(struct sk_buff *skb)
 
     nlh = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, msg_size, 0);
     NETLINK_CB(skb_out).dst_group = 0; /* unicast group */
-    strncpy(nlmsg_data(nlh), msg, msg_size);
+    memcpy(nlmsg_data(nlh), msg, msg_size);
 
     if (nlmsg_unicast(nl_sk, skb_out, pid) < 0)
         pr_info("netlink: Error while sending back to user\n");
