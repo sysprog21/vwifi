@@ -233,7 +233,7 @@ static int denylist_check(char *dest, char *source)
     denylist_len = strnlen(vwifi->denylist, MAX_DENYLIST_SIZE);
     user_input = kmalloc(denylist_len + 1, GFP_KERNEL);
     if (!user_input)
-        return 0;
+        return 1;
     memcpy(user_input, vwifi->denylist, denylist_len);
     user_input[denylist_len] = '\0';
 
