@@ -1113,6 +1113,26 @@ static void vwifi_scan_routine(struct work_struct *w)
 
 static void vwifi_virtio_connect_request(struct vwifi_vif *vif);
 
+static void vwifi_cfg80211_new_sta(struct vwifi_vif *vif, const u8 *mac,
+                                   struct station_info *sinfo, gfp_t gfp)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+    cfg80211_new_sta(&vif->wdev, mac, sinfo, gfp);
+#else
+    cfg80211_new_sta(vif->ndev, mac, sinfo, gfp);
+#endif
+}
+
+static void vwifi_cfg80211_del_sta(struct vwifi_vif *vif, const u8 *mac,
+                                   gfp_t gfp)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+    cfg80211_del_sta(&vif->wdev, mac, gfp);
+#else
+    cfg80211_del_sta(vif->ndev, mac, gfp);
+#endif
+}
+
 static void vwifi_connect_routine(struct work_struct *w)
 {
     struct vwifi_vif *vif = container_of(w, struct vwifi_vif, ws_connect);
@@ -1162,7 +1182,8 @@ static void vwifi_connect_routine(struct work_struct *w)
              * command NL80211_CMD_NEW_STATION for latter processing
              * (e.g. 4-way handshake).
              */
-            cfg80211_new_sta(ap->ndev, vif->ndev->dev_addr, sinfo, GFP_KERNEL);
+            vwifi_cfg80211_new_sta(ap, vif->ndev->dev_addr, sinfo,
+                                   GFP_KERNEL);
 
             mutex_unlock(&ap->lock);
 
@@ -1236,7 +1257,7 @@ static void vwifi_disconnect_routine(struct work_struct *w)
         }
 
         if (vif->ap->ap_enabled && !list_empty(&vif->bss_list)) {
-            cfg80211_del_sta(vif->ap->ndev, vif->ndev->dev_addr, GFP_KERNEL);
+            vwifi_cfg80211_del_sta(vif->ap, vif->ndev->dev_addr, GFP_KERNEL);
             list_del(&vif->bss_list);
         }
 
@@ -2790,7 +2811,7 @@ static void vwifi_virtio_mgmt_rx_disconnect(
 
         mutex_unlock(&vif->lock);
     } else if (vif->wdev.iftype == NL80211_IFTYPE_AP) {
-        cfg80211_del_sta(vif->ndev, src, GFP_KERNEL);
+        vwifi_cfg80211_del_sta(vif, src, GFP_KERNEL);
 
         mutex_lock(&vif->bss_sta_table_lock);
 
@@ -2926,7 +2947,7 @@ static void vwifi_virtio_mgmt_rx_connect_request(
      * command NL80211_CMD_NEW_STATION for latter processing
      * (e.g. 4-way handshake).
      */
-    cfg80211_new_sta(vif->ndev, src, sinfo, GFP_KERNEL);
+    vwifi_cfg80211_new_sta(vif, src, sinfo, GFP_KERNEL);
 
 out_free_sinfo:
     kfree(sinfo);
