@@ -24,6 +24,14 @@ MODULE_DESCRIPTION("virtual cfg80211 driver");
 #define NAME_PREFIX "vw"
 #define NDEV_NAME NAME_PREFIX "%d"
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+#define VWIFI_CFG80211_DEV struct wireless_dev
+#define VWIFI_CFG80211_NDEV(cfg_dev) ((cfg_dev)->netdev)
+#else
+#define VWIFI_CFG80211_DEV struct net_device
+#define VWIFI_CFG80211_NDEV(cfg_dev) (cfg_dev)
+#endif
+
 #define VWIFI_WIPHY_NAME_LEN 12
 #define VWIFI_WIPHY_PREFIX "vw_phy"
 
@@ -216,14 +224,21 @@ static struct sock *nl_sk = NULL;
 
 static int denylist_check(char *dest, char *source)
 {
+    size_t denylist_len;
+    char *user_input, *input;
+
     if (!vwifi->denylist || !*(vwifi->denylist))
         return 0;
 
-    char *user_input =
-        kmalloc(sizeof(char) * (strlen(vwifi->denylist) + 1), GFP_KERNEL);
-    strncpy(user_input, vwifi->denylist, strlen(vwifi->denylist));
+    denylist_len = strnlen(vwifi->denylist, MAX_DENYLIST_SIZE);
+    user_input = kmalloc(denylist_len + 1, GFP_KERNEL);
+    if (!user_input)
+        return 1;
+    memcpy(user_input, vwifi->denylist, denylist_len);
+    user_input[denylist_len] = '\0';
 
-    char *token = strsep(&user_input, "\n");
+    input = user_input;
+    char *token = strsep(&input, "\n");
     while (token) {
         char *denylist_dest = strsep(&token, " ");
         strsep(&token, " ");
@@ -232,21 +247,22 @@ static int denylist_check(char *dest, char *source)
             kfree(user_input);
             return 1;
         }
-        token = strsep(&user_input, "\n");
+        token = strsep(&input, "\n");
     }
     kfree(user_input);
 
     return 0;
 }
 
-static void denylist_load(char *dlist)
+static void denylist_load(char *dlist, size_t dlist_len)
 {
     if (!vwifi->denylist) {
         pr_info("vwifi->denylist have to be kmalloc first\n");
         return;
     }
+    dlist_len = strnlen(dlist, min_t(size_t, dlist_len, MAX_DENYLIST_SIZE - 1));
     memset(vwifi->denylist, '\0', MAX_DENYLIST_SIZE); /* clear the denylist */
-    strncpy(vwifi->denylist, dlist, strlen(dlist));
+    memcpy(vwifi->denylist, dlist, dlist_len);
 }
 
 static void denylist_nl_recv(struct sk_buff *skb)
@@ -259,7 +275,7 @@ static void denylist_nl_recv(struct sk_buff *skb)
 
     nlh = (struct nlmsghdr *) skb->data;
 
-    denylist_load((char *) nlmsg_data(nlh));
+    denylist_load((char *) nlmsg_data(nlh), nlmsg_len(nlh));
 
     /* pid of sending process */
     pid = nlh->nlmsg_pid;
@@ -272,7 +288,7 @@ static void denylist_nl_recv(struct sk_buff *skb)
 
     nlh = nlmsg_put(skb_out, 0, 0, NLMSG_DONE, msg_size, 0);
     NETLINK_CB(skb_out).dst_group = 0; /* unicast group */
-    strncpy(nlmsg_data(nlh), msg, msg_size);
+    memcpy(nlmsg_data(nlh), msg, msg_size);
 
     if (nlmsg_unicast(nl_sk, skb_out, pid) < 0)
         pr_info("netlink: Error while sending back to user\n");
@@ -1096,6 +1112,29 @@ static void vwifi_scan_routine(struct work_struct *w)
 
 static void vwifi_virtio_connect_request(struct vwifi_vif *vif);
 
+static void vwifi_cfg80211_new_sta(struct vwifi_vif *vif,
+                                   const u8 *mac,
+                                   struct station_info *sinfo,
+                                   gfp_t gfp)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+    cfg80211_new_sta(&vif->wdev, mac, sinfo, gfp);
+#else
+    cfg80211_new_sta(vif->ndev, mac, sinfo, gfp);
+#endif
+}
+
+static void vwifi_cfg80211_del_sta(struct vwifi_vif *vif,
+                                   const u8 *mac,
+                                   gfp_t gfp)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
+    cfg80211_del_sta(&vif->wdev, mac, gfp);
+#else
+    cfg80211_del_sta(vif->ndev, mac, gfp);
+#endif
+}
+
 static void vwifi_connect_routine(struct work_struct *w)
 {
     struct vwifi_vif *vif = container_of(w, struct vwifi_vif, ws_connect);
@@ -1145,7 +1184,7 @@ static void vwifi_connect_routine(struct work_struct *w)
              * command NL80211_CMD_NEW_STATION for latter processing
              * (e.g. 4-way handshake).
              */
-            cfg80211_new_sta(ap->ndev, vif->ndev->dev_addr, sinfo, GFP_KERNEL);
+            vwifi_cfg80211_new_sta(ap, vif->ndev->dev_addr, sinfo, GFP_KERNEL);
 
             mutex_unlock(&ap->lock);
 
@@ -1219,7 +1258,7 @@ static void vwifi_disconnect_routine(struct work_struct *w)
         }
 
         if (vif->ap->ap_enabled && !list_empty(&vif->bss_list)) {
-            cfg80211_del_sta(vif->ap->ndev, vif->ndev->dev_addr, GFP_KERNEL);
+            vwifi_cfg80211_del_sta(vif->ap, vif->ndev->dev_addr, GFP_KERNEL);
             list_del(&vif->bss_list);
         }
 
@@ -1340,10 +1379,11 @@ static int vwifi_disconnect(struct wiphy *wiphy,
  * This callback is invoked when the rtnl lock has been acquired.
  */
 static int vwifi_get_station(struct wiphy *wiphy,
-                             struct net_device *dev,
+                             VWIFI_CFG80211_DEV *cfg_dev,
                              const u8 *mac,
                              struct station_info *sinfo)
 {
+    struct net_device *dev = VWIFI_CFG80211_NDEV(cfg_dev);
     struct vwifi_vif *vif = ndev_get_vwifi_vif(dev);
 
     bool found_sta = false;
@@ -1439,11 +1479,12 @@ static int vwifi_get_station(struct wiphy *wiphy,
 
 /* dump station callback -- resume dump at index @idx */
 static int vwifi_dump_station(struct wiphy *wiphy,
-                              struct net_device *dev,
+                              VWIFI_CFG80211_DEV *cfg_dev,
                               int idx,
                               u8 *mac,
                               struct station_info *sinfo)
 {
+    struct net_device *dev = VWIFI_CFG80211_NDEV(cfg_dev);
     struct vwifi_vif *ap_vif = ndev_get_vwifi_vif(dev);
 
     pr_info("Dump station at the idx %d\n", idx);
@@ -1466,7 +1507,7 @@ static int vwifi_dump_station(struct wiphy *wiphy,
     ret = 0;
 
     memcpy(mac, sta_vif->ndev->dev_addr, ETH_ALEN);
-    return vwifi_get_station(wiphy, dev, mac, sinfo);
+    return vwifi_get_station(wiphy, cfg_dev, mac, sinfo);
 }
 
 static void vwifi_virtio_scan_complete(struct timer_list *t);
@@ -1825,7 +1866,7 @@ static int vwifi_change_beacon(struct wiphy *wiphy,
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 static int vwifi_add_key(struct wiphy *wiphy,
-                         struct net_device *ndev,
+                         VWIFI_CFG80211_DEV *cfg_dev,
                          int link_id,
                          u8 key_idx,
                          bool pairwise,
@@ -1833,7 +1874,7 @@ static int vwifi_add_key(struct wiphy *wiphy,
                          struct key_params *params)
 #else
 static int vwifi_add_key(struct wiphy *wiphy,
-                         struct net_device *ndev,
+                         VWIFI_CFG80211_DEV *cfg_dev,
                          u8 key_idx,
                          bool pairwise,
                          const u8 *mac_addr,
@@ -1845,14 +1886,14 @@ static int vwifi_add_key(struct wiphy *wiphy,
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 static int vwifi_del_key(struct wiphy *wiphy,
-                         struct net_device *ndev,
+                         VWIFI_CFG80211_DEV *cfg_dev,
                          int link_id,
                          u8 key_idx,
                          bool pairwise,
                          const u8 *mac_addr)
 #else
 static int vwifi_del_key(struct wiphy *wiphy,
-                         struct net_device *ndev,
+                         VWIFI_CFG80211_DEV *cfg_dev,
                          u8 key_idx,
                          bool pairwise,
                          const u8 *mac_addr)
@@ -1886,10 +1927,11 @@ static void vwifi_virtio_sta_entry_response(struct vwifi_vif *vif,
                                             const u8 *sta);
 
 static int vwifi_change_station(struct wiphy *wiphy,
-                                struct net_device *ndev,
+                                VWIFI_CFG80211_DEV *cfg_dev,
                                 const u8 *mac,
                                 struct station_parameters *params)
 {
+    struct net_device *ndev = VWIFI_CFG80211_NDEV(cfg_dev);
     struct vwifi_vif *vif = ndev_get_vwifi_vif(ndev);
     struct bss_sta_entry *sta_entry;
     unsigned long flags;
@@ -2194,24 +2236,30 @@ static struct cfg80211_ops vwifi_cfg_ops = {
     .leave_ibss = vwifi_leave_ibss,
 };
 
+#undef VWIFI_CFG80211_NDEV
+#undef VWIFI_CFG80211_DEV
+
 /* Macro for defining 2GHZ channel array */
-#define CHAN_2GHZ(channel, freq)                          \
-    {                                                     \
-        .band = NL80211_BAND_2GHZ, .hw_value = (channel), \
-        .center_freq = (freq),                            \
+#define CHAN_2GHZ(channel, freq)   \
+    {                              \
+        .band = NL80211_BAND_2GHZ, \
+        .hw_value = (channel),     \
+        .center_freq = (freq),     \
     }
 
 /* Macro for defining 5GHZ channel array */
-#define CHAN_5GHZ(channel)                                \
-    {                                                     \
-        .band = NL80211_BAND_5GHZ, .hw_value = (channel), \
-        .center_freq = 5000 + (5 * (channel)),            \
+#define CHAN_5GHZ(channel)                     \
+    {                                          \
+        .band = NL80211_BAND_5GHZ,             \
+        .hw_value = (channel),                 \
+        .center_freq = 5000 + (5 * (channel)), \
     }
 
 /* Macro for defining rate table */
-#define RATE_ENT(_rate, _hw_value)                   \
-    {                                                \
-        .bitrate = (_rate), .hw_value = (_hw_value), \
+#define RATE_ENT(_rate, _hw_value) \
+    {                              \
+        .bitrate = (_rate),        \
+        .hw_value = (_hw_value),   \
     }
 
 /* Array of "supported" channels in 2GHz band. It is required for wiphy. */
@@ -2767,7 +2815,7 @@ static void vwifi_virtio_mgmt_rx_disconnect(
 
         mutex_unlock(&vif->lock);
     } else if (vif->wdev.iftype == NL80211_IFTYPE_AP) {
-        cfg80211_del_sta(vif->ndev, src, GFP_KERNEL);
+        vwifi_cfg80211_del_sta(vif, src, GFP_KERNEL);
 
         mutex_lock(&vif->bss_sta_table_lock);
 
@@ -2903,7 +2951,7 @@ static void vwifi_virtio_mgmt_rx_connect_request(
      * command NL80211_CMD_NEW_STATION for latter processing
      * (e.g. 4-way handshake).
      */
-    cfg80211_new_sta(vif->ndev, src, sinfo, GFP_KERNEL);
+    vwifi_cfg80211_new_sta(vif, src, sinfo, GFP_KERNEL);
 
 out_free_sinfo:
     kfree(sinfo);
